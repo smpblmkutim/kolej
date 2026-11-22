@@ -231,6 +231,16 @@ function loadXLSX() {                                    // SheetJS dimuat hanya
   }));
 }
 
+let _pdfP = null;
+function loadJsPDF() {                                   // jsPDF dimuat hanya saat membuat template
+  if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+  return _pdfP || (_pdfP = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
+    s.onload = () => res(window.jspdf.jsPDF); s.onerror = () => { _pdfP = null; rej(new Error('Gagal memuat pembuat PDF. Periksa internet, atau pakai Unduhan Cepat di bawah.')); };
+    document.head.appendChild(s);
+  }));
+}
+
 /* ---------------- Indikator jaringan & antrean ---------------- */
 let _pending = 0;
 Outbox.on(items => { _pending = items.length; renderNet(); });

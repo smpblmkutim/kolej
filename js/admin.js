@@ -14,7 +14,9 @@ function statusChip(s) { return s === 'Aktif' ? `<span class="chip ok">${ic('che
 function formLayer(title, fields, onSubmit, opt = {}) {
   const L = openLayer(`<div class="sh-h"><div class="grow"><h3>${esc(title)}</h3>${opt.sub ? `<p class="muted small">${esc(opt.sub)}</p>` : ''}</div><button class="btn-icon" data-close>${ic('x')}</button></div>
     <form id="fl" novalidate>${fields}<div class="err-text" id="fl-e" style="min-height:18px"></div>
-    <button class="btn btn-primary btn-block" type="submit" style="margin-top:6px">${ic('save')} <span>${esc(opt.ok || 'Simpan')}</span></button></form>`);
+    <button class="btn btn-primary btn-block" type="submit" style="margin-top:6px">${ic('save')} <span>${esc(opt.ok || 'Simpan')}</span></button>
+    ${opt.onDelete ? `<button class="btn btn-danger btn-block" type="button" id="fl-del" style="margin-top:8px">${ic('trash-2')} <span>${esc(opt.delLabel || 'Hapus')}</span></button>` : ''}</form>`);
+  if (opt.onDelete) $('#fl-del', L.el).onclick = () => { L.close(); opt.onDelete(); };
   $('#fl', L.el).addEventListener('submit', e => {
     e.preventDefault();
     const btn = $('button[type=submit]', L.el), fd = {};
@@ -36,7 +38,7 @@ registerPage('data', {
   title: 'Data Master', admin: true,
   render(el) {
     const b = AppState.boot;
-    const items = [['guru', 'Data Guru', 'graduation-cap', (b.users || []).filter(u => u.status === 'Aktif').length + ' akun aktif'], ['mapel', 'Data Mapel', 'book-open', activeMapel().length + ' mapel'], ['kelas', 'Data Kelas', 'building-2', activeKelas().length + ' kelas'], ['siswa', 'Data Siswa', 'users', b.siswa.filter(s => s[3] === 'Aktif').length + ' siswa aktif'], ['pengaturan', 'Pengaturan & Tema', 'palette', 'Sekolah, ujian aktif, warna'], ['log', 'Log Aktivitas', 'history', 'Riwayat tindakan pengguna']];
+    const items = [['guru', 'Data Guru', 'graduation-cap', (b.users || []).filter(u => u.status === 'Aktif').length + ' akun aktif'], ['mapel', 'Data Mapel', 'book-open', activeMapel().length + ' mapel'], ['kelas', 'Data Kelas', 'building-2', activeKelas().length + ' kelas'], ['siswa', 'Data Siswa', 'users', b.siswa.filter(s => s[3] === 'Aktif').length + ' siswa aktif'], ['template', 'Template LJK', 'printer', 'A4 penuh, A4/F4 dibagi dua'], ['pengaturan', 'Pengaturan & Tema', 'palette', 'Sekolah, ujian aktif, warna'], ['log', 'Log Aktivitas', 'history', 'Riwayat tindakan pengguna']];
     el.innerHTML = `<div class="page-h"><h1>Data & Sistem</h1></div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">${items.map(([r, t, i, s]) => `<a class="card" href="#/${r}" style="text-decoration:none;color:inherit;margin:0"><span class="stat" style="padding:10px;display:inline-grid;border:0;background:var(--primary-soft);color:var(--primary)">${ic(i)}</span><h3 style="margin-top:10px">${t}</h3><p class="muted small">${esc(s)}</p></a>`).join('')}</div>`;
   }
 });
@@ -71,7 +73,14 @@ registerPage('guru', {
           const res = await api('userSave', Object.assign({ id: u && u.id }, fd));
           if (!res.success) return res.message;
           await adminRefresh(); L.close(); toast(res.message); draw();
-        });
+        }, u && u.id !== AppState.me.id ? {
+          delLabel: 'Hapus pengguna',
+          onDelete: async () => {
+            const r = await deleteFlow({ title: 'Hapus ' + u.nama + '?', text: 'Akun ini dihapus permanen dan tidak bisa login lagi.', action: 'userDelete', data: { id: u.id },
+              onDeactivate: async () => { const x = await api('userSave', { id: u.id, nama: u.nama, peran: u.peran, username: u.username, status: 'Nonaktif' }); toast(x.success ? 'Akun dinonaktifkan.' : x.message, x.success ? 'ok' : 'bad'); await adminRefresh(); draw(); } });
+            if (r) { await adminRefresh(); draw(); }
+          }
+        } : {});
       bindSeg(L.el);
       const sync = () => { $('#un-wrap', L.el).hidden = $('[name=peran]', L.el).value !== 'Admin'; };
       $('[data-seg=peran]', L.el).addEventListener('segchange', sync); sync();
@@ -87,8 +96,8 @@ registerPage('guru', {
 /* ---------------- Mapel & Kelas (pola sama) ---------------- */
 function masterPage(kind) {
   const cfg = kind === 'mapel'
-    ? { title: 'Data Mapel', icon: 'book-open', list: () => [...AppState.maps.mapel.values()], action: 'mapelSave', label: 'Nama mata pelajaran', ph: 'mis. Matematika' }
-    : { title: 'Data Kelas', icon: 'building-2', list: () => [...AppState.maps.kelas.values()], action: 'kelasSave', label: 'Nama kelas', ph: 'mis. 8A' };
+    ? { title: 'Data Mapel', icon: 'book-open', list: () => [...AppState.maps.mapel.values()], action: 'mapelSave', del: 'mapelDelete', label: 'Nama mata pelajaran', ph: 'mis. Matematika' }
+    : { title: 'Data Kelas', icon: 'building-2', list: () => [...AppState.maps.kelas.values()], action: 'kelasSave', del: 'kelasDelete', label: 'Nama kelas', ph: 'mis. 8A' };
   return {
     title: cfg.title, admin: true,
     render(el) {
@@ -97,17 +106,27 @@ function masterPage(kind) {
         el.innerHTML = `<div class="page-h"><div class="grow"><h1>${cfg.title}</h1><p class="muted">Data dinonaktifkan, bukan dihapus, agar riwayat hasil tetap utuh.</p></div><button class="btn btn-primary" id="m-add">${ic('plus')} <span class="hide-mob">Tambah</span></button></div>
           <div class="list">${items.map(x => {
             const extra = kind === 'kelas' ? ` · Tingkat ${esc(x.tingkat || '-')} · ${(AppState.maps.siswaByKelas[x.id] || []).length} siswa aktif` : '';
-            return `<div class="li" style="cursor:default"><span class="stat" style="padding:8px;margin:0;border:0;background:var(--primary-soft);color:var(--primary)">${ic(cfg.icon)}</span><div class="grow"><div class="nm">${kind === 'kelas' ? 'Kelas ' : ''}${esc(x.nama)}</div><div class="sub mono">${esc(x.id)}${extra}</div></div>${statusChip(x.status)}<button class="btn-icon" data-e="${esc(x.id)}" aria-label="Ubah">${ic('pencil')}</button></div>`;
+            const kk = kind === 'mapel' ? `<span class="chip ${x.kkm === '' ? 'out' : 'a'} tnum" title="KKM">KKM ${kkmOf(x.id)}${x.kkm === '' ? ' (bawaan)' : ''}</span>` : '';
+            return `<div class="li" style="cursor:default"><span class="stat" style="padding:8px;margin:0;border:0;background:var(--primary-soft);color:var(--primary)">${ic(cfg.icon)}</span><div class="grow"><div class="nm">${kind === 'kelas' ? 'Kelas ' : ''}${esc(x.nama)}</div><div class="sub mono">${esc(x.id)}${extra}</div></div>${kk}<span class="hide-mob">${statusChip(x.status)}</span><button class="btn-icon" data-e="${esc(x.id)}" aria-label="Ubah">${ic('pencil')}</button><button class="btn-icon" data-d="${esc(x.id)}" aria-label="Hapus" style="color:var(--bad)">${ic('trash-2')}</button></div>`;
           }).join('') || `<div class="empty">${ic(cfg.icon)}<p>Belum ada data.</p></div>`}</div>`;
         $('#m-add', el).onclick = () => edit(null);
         $$('[data-e]', el).forEach(b => b.onclick = () => edit(cfg.list().find(x => x.id === b.dataset.e)));
+        $$('[data-d]', el).forEach(b => b.onclick = () => del(cfg.list().find(x => x.id === b.dataset.d)));
+      };
+      const del = async x => {
+        const nm = (kind === 'kelas' ? 'Kelas ' : '') + x.nama;
+        const r = await deleteFlow({ title: 'Hapus ' + nm + '?', text: nm + ' dihapus permanen dari data master.', action: cfg.del, data: { id: x.id },
+          onDeactivate: async () => { const y = await api(cfg.action, { id: x.id, nama: x.nama, tingkat: x.tingkat, kkm: x.kkm, status: 'Nonaktif' }); toast(y.success ? nm + ' dinonaktifkan.' : y.message, y.success ? 'ok' : 'bad'); await adminRefresh(); draw(); } });
+        if (r) { await adminRefresh(); draw(); }
       };
       const edit = x => {
         const L = formLayer(x ? 'Ubah ' + cfg.title.replace('Data ', '') : 'Tambah ' + cfg.title.replace('Data ', ''),
           fieldHtml(cfg.label, `<input class="input" name="nama" value="${esc(x ? x.nama : '')}" placeholder="${cfg.ph}">`) +
           (kind === 'kelas' ? fieldHtml('Tingkat', `<select class="input" name="tingkat">${['7', '8', '9'].map(t => `<option ${x && x.tingkat === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`) : '') +
+          (kind === 'mapel' ? fieldHtml('KKM (0–100)', `<input class="input tnum" name="kkm" inputmode="numeric" value="${esc(x ? x.kkm : '')}" placeholder="Kosong = KKM bawaan (${kkmDefault()})">`) + '<p class="muted small" style="margin:-6px 0 12px">Guru mapel juga bisa mengatur KKM dari halaman Kunci Jawaban.</p>' : '') +
           (x ? fieldHtml('Status', segField('status', x.status, ['Aktif', 'Nonaktif'])) : ''),
-          async fd => { const res = await api(cfg.action, Object.assign({ id: x && x.id }, fd)); if (!res.success) return res.message; await adminRefresh(); L.close(); toast(res.message); draw(); });
+          async fd => { const res = await api(cfg.action, Object.assign({ id: x && x.id }, fd)); if (!res.success) return res.message; await adminRefresh(); L.close(); toast(res.message); draw(); },
+          x ? { delLabel: 'Hapus ' + (kind === 'mapel' ? 'mapel' : 'kelas'), onDelete: () => del(x) } : {});
         bindSeg(L.el);
       };
       draw();
@@ -121,7 +140,7 @@ registerPage('kelas', masterPage('kelas'));
 registerPage('siswa', {
   title: 'Data Siswa', admin: true,
   render(el) {
-    let kelas = Store.get('admKelas', ''), q = '', showOff = false;
+    let kelas = Store.get('admKelas', ''), q = '', showOff = false, sel = null;   // sel: Set NISN saat mode pilih
     const draw = () => {
       const all = [...AppState.maps.siswa.values()];
       const list = all.filter(s => (!kelas || s.kelas === kelas) && (showOff || s.status === 'Aktif') && (!q || s.nama.toLowerCase().includes(q) || s.nisn.includes(q)))
@@ -131,17 +150,31 @@ registerPage('siswa', {
         <div class="toolbar"><div class="input-wrap">${ic('search')}<input class="input" id="s-q" placeholder="Cari nama atau NISN…" value="${esc(q)}"></div>
           <button class="btn btn-outline" id="s-tpl">${ic('file-spreadsheet')} <span>Unduh Template</span></button>
           <button class="btn btn-soft" id="s-imp">${ic('upload')} <span>Impor Excel</span></button>
+          <button class="btn ${sel ? 'btn-primary' : 'btn-outline'}" id="s-sel">${ic('square-check-big')} <span>${sel ? 'Selesai' : 'Pilih'}</span></button>
           <button class="btn btn-primary" id="s-add">${ic('user-plus')} <span class="hide-mob">Tambah</span></button></div>
         <div class="filters"><select class="input" id="s-k"><option value="">Semua Kelas</option>${activeKelas().map(k => `<option value="${esc(k.id)}" ${k.id === kelas ? 'selected' : ''}>Kelas ${esc(k.nama)} (${(AppState.maps.siswaByKelas[k.id] || []).length})</option>`).join('')}</select>
           <label class="check chip pick" style="height:40px"><input type="checkbox" id="s-off" ${showOff ? 'checked' : ''} style="width:16px;height:16px"> Tampilkan nonaktif</label></div>
-        <div class="hide-desk list">${shown.map(s => `<button class="li" data-n="${esc(s.nisn)}"><span class="avatar sm" style="${s.status === 'Aktif' ? '' : 'background:var(--surface-3);color:var(--muted)'}">${esc(fmt.initials(s.nama))}</span><div class="grow"><div class="nm ellip">${esc(s.nama)}</div><div class="sub mono">${esc(s.nisn)} · Kelas ${esc(kelasNama(s.kelas))}</div></div>${s.status === 'Aktif' ? '' : statusChip(s.status)}${ic('chevron-right')}</button>`).join('') || `<div class="empty">${ic('users')}<h3>Belum ada siswa</h3><p>Gunakan Impor Excel untuk memasukkan banyak siswa sekaligus.</p></div>`}</div>
-        <div class="hide-mob tbl-wrap"><table class="tbl"><thead><tr><th>NISN</th><th>Nama Siswa</th><th>Kelas</th><th>Status</th><th></th></tr></thead><tbody>${shown.map(s => `<tr><td class="mono">${esc(s.nisn)}</td><td><b>${esc(s.nama)}</b></td><td><span class="chip">${esc(kelasNama(s.kelas))}</span></td><td>${statusChip(s.status)}</td><td style="text-align:right"><button class="btn-icon" data-n="${esc(s.nisn)}" aria-label="Ubah">${ic('pencil')}</button></td></tr>`).join('') || '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px">Belum ada siswa.</td></tr>'}</tbody></table></div>
-        ${list.length > 300 ? `<p class="muted small" style="margin-top:8px">Menampilkan 300 dari ${list.length}. Gunakan filter kelas atau pencarian.</p>` : ''}`;
+        ${sel ? `<label class="check" style="margin-bottom:8px"><input type="checkbox" id="s-all" ${shown.length && shown.every(x => sel.has(x.nisn)) ? 'checked' : ''}> Pilih semua yang tampil (${shown.length})</label>` : ''}
+        <div class="hide-desk list">${shown.map(s => `<button class="li" data-n="${esc(s.nisn)}">${sel ? `<input type="checkbox" tabindex="-1" ${sel.has(s.nisn) ? 'checked' : ''}>` : ''}<span class="avatar sm" style="${s.status === 'Aktif' ? '' : 'background:var(--surface-3);color:var(--muted)'}">${esc(fmt.initials(s.nama))}</span><div class="grow"><div class="nm ellip">${esc(s.nama)}</div><div class="sub mono">${esc(s.nisn)} · Kelas ${esc(kelasNama(s.kelas))}</div></div>${s.status === 'Aktif' ? '' : statusChip(s.status)}${ic('chevron-right')}</button>`).join('') || `<div class="empty">${ic('users')}<h3>Belum ada siswa</h3><p>Gunakan Impor Excel untuk memasukkan banyak siswa sekaligus.</p></div>`}</div>
+        <div class="hide-mob tbl-wrap"><table class="tbl"><thead><tr>${sel ? '<th></th>' : ''}<th>NISN</th><th>Nama Siswa</th><th>Kelas</th><th>Status</th><th></th></tr></thead><tbody>${shown.map(s => `<tr data-n="${sel ? esc(s.nisn) : ''}" style="${sel ? 'cursor:pointer' : ''}">${sel ? `<td><input type="checkbox" tabindex="-1" ${sel.has(s.nisn) ? 'checked' : ''}></td>` : ''}<td class="mono">${esc(s.nisn)}</td><td><b>${esc(s.nama)}</b></td><td><span class="chip">${esc(kelasNama(s.kelas))}</span></td><td>${statusChip(s.status)}</td><td style="text-align:right">${sel ? '' : `<button class="btn-icon" data-n="${esc(s.nisn)}" aria-label="Ubah">${ic('pencil')}</button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px">Belum ada siswa.</td></tr>'}</tbody></table></div>
+        ${list.length > 300 ? `<p class="muted small" style="margin-top:8px">Menampilkan 300 dari ${list.length}. Gunakan filter kelas atau pencarian.</p>` : ''}
+        ${sel ? `<div class="selbar"><b class="grow tnum">${sel.size} siswa dipilih</b><button class="btn btn-danger btn-sm" id="s-del" ${sel.size ? '' : 'disabled'}>${ic('trash-2', 'sm')} <span>Hapus</span></button></div>` : ''}`;
       $('#s-q', el).oninput = e => { q = e.target.value.toLowerCase(); const p = e.target.selectionStart; draw(); const i = $('#s-q', el); i.focus(); i.setSelectionRange(p, p); };
       $('#s-k', el).onchange = e => { kelas = e.target.value; Store.set('admKelas', kelas); draw(); };
       $('#s-off', el).onchange = e => { showOff = e.target.checked; draw(); };
       $('#s-add', el).onclick = () => edit(null);
-      $$('[data-n]', el).forEach(b => b.onclick = () => edit(AppState.maps.siswa.get(b.dataset.n)));
+      $('#s-sel', el).onclick = () => { sel = sel ? null : new Set(); draw(); };
+      $$('[data-n]', el).forEach(b => b.onclick = e => {
+        const n = b.dataset.n; if (!n) return;
+        if (sel) { e.preventDefault(); sel.has(n) ? sel.delete(n) : sel.add(n); draw(); return; }
+        edit(AppState.maps.siswa.get(n));
+      });
+      const sa = $('#s-all', el); if (sa) sa.onchange = e => { shown.forEach(x => e.target.checked ? sel.add(x.nisn) : sel.delete(x.nisn)); draw(); };
+      const sd = $('#s-del', el); if (sd) sd.onclick = async () => {
+        const ids = [...sel];
+        const r = await deleteFlow({ title: 'Hapus ' + ids.length + ' siswa?', text: 'Data siswa terpilih dihapus permanen. Untuk siswa lulus/pindah, Anda juga bisa memilih Nonaktif lewat tombol ubah.', action: 'siswaDelete', data: { ids } });
+        if (r) { sel = null; await adminRefresh(); draw(); }
+      };
       $('#s-tpl', el).onclick = e => withBtn(e.currentTarget, downloadSiswaTemplate);
       $('#s-imp', el).onclick = () => importSiswa(draw);
     };
@@ -157,7 +190,10 @@ registerPage('siswa', {
           const res = await api('siswaSave', Object.assign({ oldNisn: s && s.nisn }, fd));
           if (!res.success) return res.message;
           await adminRefresh(); L.close(); toast(res.message); draw();
-        });
+        }, s ? { delLabel: 'Hapus siswa', onDelete: async () => {
+          const r = await deleteFlow({ title: 'Hapus ' + s.nama + '?', text: 'Data siswa dihapus permanen. Bila siswa pindah/lulus, Anda bisa memilih status Nonaktif saja.', action: 'siswaDelete', data: { ids: [s.nisn] } });
+          if (r) { await adminRefresh(); draw(); }
+        } } : {});
       bindSeg(L.el);
     };
     draw();
@@ -259,7 +295,7 @@ registerPage('pengaturan', {
         ${fieldHtml('Nama sekolah', `<input class="input" id="p-sek" value="${esc(S.nama_sekolah)}">`)}
         ${fieldHtml('Ujian aktif', `<input class="input" id="p-ujian" value="${esc(S.ujian_aktif)}" placeholder="mis. PAS Genap 2025/2026">`)}
         <p class="muted small" style="margin:-6px 0 12px">Mengganti ujian aktif = kunci & hasil baru terpisah. Hasil ujian lama tetap tersimpan sebagai arsip (bisa dipilih di filter Hasil).</p>
-        <div class="grid2">${fieldHtml('KKM', `<input class="input tnum" id="p-kkm" inputmode="numeric" value="${esc(S.kkm)}">`)}${fieldHtml('Simpan foto bukti', `<div class="seg" id="p-foto"><button data-v="Ya" class="${S.simpan_foto === 'Ya' ? 'on' : ''}">Ya</button><button data-v="Tidak" class="${S.simpan_foto !== 'Ya' ? 'on' : ''}">Tidak</button></div>`)}</div>
+        <div class="grid2">${fieldHtml('KKM bawaan', `<input class="input tnum" id="p-kkm" inputmode="numeric" value="${esc(S.kkm)}">`)}${fieldHtml('Simpan foto bukti', `<div class="seg" id="p-foto"><button data-v="Ya" class="${S.simpan_foto === 'Ya' ? 'on' : ''}">Ya</button><button data-v="Tidak" class="${S.simpan_foto !== 'Ya' ? 'on' : ''}">Tidak</button></div>`)}</div>
         ${fieldHtml('Sensitivitas pembacaan tanda X', `<div class="seg" id="p-sens">${['rendah', 'sedang', 'tinggi'].map(v => `<button data-v="${v}" class="${S.sensitivitas === v ? 'on' : ''}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>`)}
         <p class="muted small">Tinggi = tanda tipis lebih mudah terbaca (risiko bekas hapusan terbaca). Rendah = hanya tanda tegas yang dihitung.</p></div>
       <div class="card"><div class="row" style="gap:12px;margin-bottom:14px"><span class="stat" style="padding:10px;margin:0;border:0;background:var(--primary-soft);color:var(--primary)">${ic('palette')}</span><div><h3>Palet Warna & Tampilan</h3><p class="muted small">Warna institusi sekolah dan mode tampilan bawaan guru</p></div></div>

@@ -11,7 +11,7 @@ function isAdmin() { return AppState.me && AppState.me.peran === 'Admin'; }
 function buildMaps() {
   const b = AppState.boot, m = { mapel: new Map(), kelas: new Map(), siswa: new Map(), siswaByKelas: {}, hasil: {} };
   if (!b) return;
-  b.mapel.forEach(x => m.mapel.set(x[0], { id: x[0], nama: x[1], status: x[2] || 'Aktif' }));
+  b.mapel.forEach(x => m.mapel.set(x[0], { id: x[0], nama: x[1], status: x[2] || 'Aktif', kkm: x[3] === undefined || x[3] === null ? '' : String(x[3]) }));
   b.kelas.forEach(x => m.kelas.set(x[0], { id: x[0], nama: x[1], tingkat: x[2], status: x[3] || 'Aktif' }));
   b.siswa.forEach(x => {
     const o = { nisn: x[0], nama: x[1], kelas: x[2], status: x[3] || 'Aktif' };
@@ -27,6 +27,9 @@ function buildMaps() {
   AppState.maps = m;
 }
 const mapelNama = id => (AppState.maps.mapel.get(id) || {}).nama || id;
+/** KKM mapel; bila belum diatur → KKM bawaan dari Pengaturan. */
+function kkmDefault() { return Number(AppState.boot.settings.kkm) || 75; }
+function kkmOf(mapel) { const m = AppState.maps.mapel.get(mapel); return m && m.kkm !== '' && !isNaN(Number(m.kkm)) ? Number(m.kkm) : kkmDefault(); }
 const kelasNama = id => (AppState.maps.kelas.get(id) || {}).nama || id;
 function activeMapel() { return [...AppState.maps.mapel.values()].filter(x => x.status === 'Aktif').sort((a, b) => a.nama.localeCompare(b.nama)); }
 function activeKelas() { return [...AppState.maps.kelas.values()].filter(x => x.status === 'Aktif').sort((a, b) => a.nama.localeCompare(b.nama, 'id', { numeric: true })); }
@@ -139,6 +142,26 @@ function installCard(style) {
 }
 window.addEventListener('pwa:installed', () => toast('Kolej berhasil dipasang. Buka dari ikon di layar utama.'));
 
+/**
+ * Alur hapus: konfirmasi → kirim → bila punya data terkait (HAS_RESULTS) minta konfirmasi kedua → force.
+ * IN_USE (masih dipakai) ditampilkan dengan saran "Nonaktifkan". Return respons sukses atau null.
+ */
+async function deleteFlow(o) {
+  if (!(await confirmDlg({ title: o.title, text: o.text, ok: 'Hapus', danger: true, icon: 'trash-2' }))) return null;
+  let res = await api(o.action, o.data);
+  if (!res.success && res.data && res.data.code === 'HAS_RESULTS') {
+    if (!(await confirmDlg({ title: 'Hapus juga ' + res.data.hasil + ' hasil scan?', text: res.message + ' Tindakan ini tidak bisa dibatalkan.', ok: 'Ya, hapus semuanya', danger: true, icon: 'triangle-alert' }))) return null;
+    res = await api(o.action, Object.assign({}, o.data, { force: true }));
+  }
+  if (!res.success) {
+    if (res.data && res.data.code === 'IN_USE' && o.onDeactivate) {
+      if (await confirmDlg({ title: 'Tidak bisa dihapus', text: res.message, ok: 'Nonaktifkan saja', cancel: 'Batal', icon: 'info', tone: 'info' })) await o.onDeactivate();
+    } else toast(res.message, 'bad', 5000);
+    return null;
+  }
+  toast(res.message); return res;
+}
+
 /* ---------------- Halaman login ---------------- */
 function renderLogin() {
   document.title = 'Masuk · Kolej';
@@ -230,11 +253,11 @@ function renderLogin() {
 const NAV_GURU = [['scan', 'Scan', 'scan-line'], ['kunci', 'Kunci', 'key-round'], ['hasil', 'Hasil', 'chart-column'], ['akun', 'Akun', 'circle-user']];
 const NAV_ADMIN_MOB = [['dashboard', 'Dashboard', 'layout-dashboard'], ['scan', 'Scan', 'scan-line'], ['hasil', 'Hasil', 'chart-column'], ['data', 'Data', 'list'], ['akun', 'Akun', 'circle-user']];
 const SIDE_ADMIN = [
-  ['Menu Utama', [['dashboard', 'Dashboard', 'layout-dashboard'], ['scan', 'Scan LJK', 'scan-line'], ['kunci', 'Kunci Jawaban', 'key-round'], ['hasil', 'Hasil', 'clipboard-check']]],
+  ['Menu Utama', [['dashboard', 'Dashboard', 'layout-dashboard'], ['scan', 'Scan LJK', 'scan-line'], ['kunci', 'Kunci Jawaban', 'key-round'], ['hasil', 'Hasil', 'clipboard-check'], ['template', 'Template LJK', 'printer']]],
   ['Data Master', [['guru', 'Data Guru', 'graduation-cap'], ['mapel', 'Data Mapel', 'book-open'], ['kelas', 'Data Kelas', 'building-2'], ['siswa', 'Data Siswa', 'users']]],
   ['Sistem', [['pengaturan', 'Pengaturan', 'settings'], ['log', 'Log Aktivitas', 'history'], ['akun', 'Akun Saya', 'circle-user']]]
 ];
-const SIDE_GURU = [['Menu', [['scan', 'Scan LJK', 'scan-line'], ['kunci', 'Kunci Jawaban', 'key-round'], ['hasil', 'Hasil & Statistik', 'chart-column'], ['pilih', 'Pilih Mapel & Kelas', 'list-checks'], ['akun', 'Akun', 'circle-user']]]];
+const SIDE_GURU = [['Menu', [['scan', 'Scan LJK', 'scan-line'], ['kunci', 'Kunci Jawaban', 'key-round'], ['hasil', 'Hasil & Statistik', 'chart-column'], ['pilih', 'Pilih Mapel & Kelas', 'list-checks'], ['template', 'Template LJK', 'printer'], ['akun', 'Akun', 'circle-user']]]];
 const Pages = {};
 function registerPage(name, def) { Pages[name] = Object.assign({ admin: false }, def); }
 
@@ -285,7 +308,7 @@ function route(soft) {
   if (name !== 'pengaturan') applyBrand(AppState.boot.settings.warna_utama, AppState.boot.settings.warna_aksen);
   if (def.needCtx && !AppState.ctx) { location.hash = '#/pilih'; return; }
   $$('.sidebar a[data-r], .bottomnav a[data-r]').forEach(a => {
-    const r = a.dataset.r, on = r === name || (name === 'pilih' && r === 'scan') || (['guru', 'mapel', 'kelas', 'siswa', 'pengaturan', 'log'].includes(name) && r === 'data');
+    const r = a.dataset.r, on = r === name || (name === 'pilih' && r === 'scan') || (['guru', 'mapel', 'kelas', 'siswa', 'pengaturan', 'log'].includes(name) && r === 'data') || (name === 'template' && r === (isAdmin() ? 'data' : 'akun'));
     a.classList.toggle('on', on);
   });
   $('#tb-title').textContent = def.title || 'Kolej';
@@ -328,11 +351,38 @@ async function setContext(mapel, kelas) {
   return true;
 }
 function ctxHeader(extra) {
-  const c = AppState.ctx;
-  return `<div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:14px">
-    <span class="chip p">${ic('book-open')} ${esc(mapelNama(c.mapel))}</span><span class="chip a">${ic('users')} Kelas ${esc(kelasNama(c.kelas))}</span>
-    <span class="chip out">${ic('graduation-cap')} ${esc(ujianAktif())}</span>
-    <a href="#/pilih" class="chip out" style="text-decoration:none;color:var(--primary)">${ic('refresh-cw')} Ganti</a>${extra || ''}</div>`;
+  const c = AppState.ctx, sesi = sesiFor(c.mapel, c.kelas), p = progressOf(sesi, c.kelas);
+  return `<div class="ctx-card"><span class="ctx-ic">${ic('book-open')}</span>
+    <div class="grow" style="min-width:0"><div class="label-sm" style="color:inherit;opacity:.75">Sedang dikoreksi</div>
+      <div class="ctx-t">${esc(mapelNama(c.mapel))} <span style="opacity:.5">·</span> Kelas ${esc(kelasNama(c.kelas))}</div>
+      <div class="small" style="opacity:.8">${p.total} siswa · KKM ${kkmOf(c.mapel)}${sesi ? ' · ' + sesi.n + ' soal' : ' · kunci belum dibuat'}</div></div>
+    <button class="btn ctx-btn" data-ctx-switch>${ic('refresh-cw')} <span>Ganti</span></button></div>${extra || ''}`;
+}
+function bindCtx(el) { $$('[data-ctx-switch]', el).forEach(b => b.onclick = () => quickSwitch()); }
+/** Ganti mapel/kelas cepat lewat lembar bawah (tanpa pindah halaman). */
+function quickSwitch() {
+  const c = AppState.ctx || {}, mp = activeMapel();
+  let mapel = c.mapel && AppState.maps.mapel.get(c.mapel) ? c.mapel : (mp[0] && mp[0].id);
+  const L = openLayer(`<div class="sh-h"><div class="grow"><h2>Ganti Mapel & Kelas</h2><p class="muted small">${esc(ujianAktif())}</p></div><button class="btn-icon" data-close>${ic('x')}</button></div><div id="qs"></div>`);
+  const draw = () => {
+    $('#qs', L.el).innerHTML = `<div class="label-sm" style="margin-bottom:8px">Mata Pelajaran</div>
+      <div class="chips" style="flex-wrap:wrap;margin-bottom:16px">${mp.map(m => `<button class="chip pick ${m.id === mapel ? 'on' : ''}" data-m="${esc(m.id)}">${esc(m.nama)}</button>`).join('')}</div>
+      <div class="label-sm" style="margin-bottom:8px">Kelas</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">${activeKelas().map(k => {
+        const se = sesiFor(mapel, k.id), p = progressOf(se, k.id), on = c.mapel === mapel && c.kelas === k.id;
+        return `<button class="card" data-k="${esc(k.id)}" style="margin:0;padding:12px;text-align:left;cursor:pointer;${on ? 'border-color:var(--primary);box-shadow:0 0 0 2px var(--primary)' : ''}"><div class="row between"><b style="font:700 16px var(--font-h)">${esc(k.nama)}</b>${on ? '<span class="chip p" style="height:22px">Aktif</span>' : ''}</div>
+          <div class="small" style="margin:4px 0 6px;color:${kunciLengkap(se) ? 'var(--ok-ink)' : 'var(--warn-ink)'}">${kunciLengkap(se) ? 'kunci siap' : 'kunci belum'}</div><div class="progress ${p.pct === 100 ? 'ok' : ''}"><i style="width:${p.pct}%"></i></div><div class="small muted tnum" style="margin-top:4px">${p.done}/${p.total}</div></button>`;
+      }).join('')}</div>`;
+    $$('[data-m]', L.el).forEach(b => b.onclick = () => { mapel = b.dataset.m; draw(); });
+    $$('[data-k]', L.el).forEach(b => b.onclick = async () => {
+      if (!(await setContext(mapel, b.dataset.k))) return;
+      L.close();
+      const page = location.hash.indexOf('#/kunci') === 0 ? '#/kunci' : (kunciLengkap(sesiFor(mapel, b.dataset.k)) ? '#/scan' : '#/kunci');
+      if (location.hash === page) route(); else location.hash = page;
+      toast(mapelNama(mapel) + ' · Kelas ' + kelasNama(b.dataset.k), 'info', 1600);
+    });
+  };
+  draw();
 }
 
 /* ======================================================================
@@ -404,7 +454,9 @@ registerPage('kunci', {
           : `<b>Bobot manual per soal</b><br>Nilai = skor diperoleh ÷ total bobot × 100. Total bobot saat ini: <b class="tnum" id="k-tw">${fmt.num(totalW, 2)}</b>`}</div></div>
         ${D.mode === 'Manual' ? '<div class="row" style="margin-top:10px;gap:8px"><input class="input tnum" id="k-wall" inputmode="decimal" placeholder="Isi semua bobot dengan…" style="min-height:42px"><button class="btn btn-soft btn-sm" id="k-wset">Terapkan</button></div>' : ''}
         <div class="row between" style="margin-top:14px"><div><b>Jumlah Butir Soal</b><div class="muted small">Format 4 opsi (A–D), maksimal 50</div></div>
-          <div class="stepper"><button id="k-dec" aria-label="Kurangi">${ic('minus')}</button><input id="k-n" class="tnum" inputmode="numeric" value="${D.n}" aria-label="Jumlah soal"><button id="k-inc" aria-label="Tambah">${ic('plus')}</button></div></div></div>
+          <div class="stepper"><button id="k-dec" aria-label="Kurangi">${ic('minus')}</button><input id="k-n" class="tnum" inputmode="numeric" value="${D.n}" aria-label="Jumlah soal"><button id="k-inc" aria-label="Tambah">${ic('plus')}</button></div></div>
+        <div class="row between" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)"><div><b>KKM ${esc(mapelNama(c.mapel))}</b><div class="muted small">Berlaku untuk semua kelas mapel ini${(AppState.maps.mapel.get(c.mapel) || {}).kkm === '' ? ' · saat ini memakai KKM bawaan' : ''}</div></div>
+          <div class="row" style="gap:6px"><input class="input tnum" id="k-kkm" inputmode="numeric" value="${kkmOf(c.mapel)}" style="width:72px;text-align:center;font-weight:700" aria-label="KKM"><button class="btn btn-soft btn-sm" id="k-kkm-save">${ic('save', 'sm')} <span>Atur</span></button></div></div></div>
       <div class="card"><div class="row between"><div class="row">${ic('clipboard-list')}<b>Progres Pengisian</b></div><b class="tnum" style="color:${f === D.n ? 'var(--ok-ink)' : 'var(--accent-ink)'}">${f} dari ${D.n} soal terisi</b></div>
         <div class="progress ${f === D.n ? 'ok' : ''}" style="margin:10px 0 12px"><i style="width:${f / D.n * 100}%"></i></div>
         <div class="chips">${ranges.map(([a, b]) => `<button class="chip pick" data-go="${a}" style="height:36px">${a}–${b}${D.kunci.slice(a - 1, b).filter(Boolean).length < b - a + 1 ? ' <span style="color:var(--warn)">●</span>' : ''}</button>`).join('')}</div></div>
@@ -423,6 +475,7 @@ registerPage('kunci', {
       const tw = $('#k-tw', el); if (tw) tw.textContent = fmt.num(D.bobot.slice(0, D.n).reduce((s, x) => s + (Number(x) || 0), 0), 2);
     }
     function bind() {
+      bindCtx(el);
       $('#k-rows', el).addEventListener('click', e => {
         const b = e.target.closest('.opt'); if (!b) return;
         const row = b.closest('.krow'), i = +row.dataset.i;
@@ -441,6 +494,14 @@ registerPage('kunci', {
       $$('[data-go]', el).forEach(b => b.onclick = () => $('#kq' + b.dataset.go, el).scrollIntoView({ behavior: 'smooth', block: 'start' }));
       const ws = $('#k-wset', el); if (ws) ws.onclick = () => { const v = $('#k-wall', el).value.replace(',', '.'); if (!(Number(v) >= 0)) return toast('Isi angka bobot.', 'warn'); for (let i = 0; i < D.n; i++) D.bobot[i] = v; persist(); draw(); };
       $('#k-more', el).onclick = moreMenu;
+      $('#k-kkm-save', el).onclick = e => withBtn(e.currentTarget, async () => {
+        const v = $('#k-kkm', el).value.trim();
+        if (!(Number(v) >= 0 && Number(v) <= 100) || v === '') return toast('KKM harus angka 0–100.', 'warn');
+        const res = await api('mapelKkm', { id: c.mapel, kkm: v });
+        if (!res.success) return toast(res.message, 'bad');
+        const row = AppState.boot.mapel.find(x => x[0] === c.mapel); if (row) row[3] = String(res.data.kkm);
+        saveBootLocal(); buildMaps(); Store.del(userKey('hasil:' + ujianAktif())); toast(res.message); draw();
+      });
       $('#k-copy', el).onclick = copyFrom;
       $('#k-save', el).onclick = e => save(e.currentTarget);
     }
@@ -448,10 +509,19 @@ registerPage('kunci', {
       const L = openLayer(`<div class="sh-h"><h3 class="grow">Menu Kunci</h3><button class="btn-icon" data-close>${ic('x')}</button></div>
         <button class="li" id="m-paste">${ic('clipboard-paste')}<div class="grow"><div class="nm">Tempel teks kunci</div><div class="sub">Contoh: ABCDA… atau 1.A 2.B 3.C</div></div></button>
         <button class="li" id="m-clear">${ic('rotate-ccw')}<div class="grow"><div class="nm">Kosongkan semua kunci</div></div></button>
-        ${sesi ? `<button class="li" id="m-reset">${ic('refresh-cw')}<div class="grow"><div class="nm">Kembalikan ke kunci tersimpan</div></div></button>` : ''}`);
+        ${sesi ? `<button class="li" id="m-reset">${ic('refresh-cw')}<div class="grow"><div class="nm">Kembalikan ke kunci tersimpan</div></div></button>
+        <button class="li" id="m-del" style="color:var(--bad-ink)">${ic('trash-2')}<div class="grow"><div class="nm">Hapus kunci jawaban ini</div><div class="sub">Kunci ${esc(mapelNama(c.mapel))} Kelas ${esc(kelasNama(c.kelas))} dihapus dari server</div></div></button>` : ''}`);
       $('#m-paste', L.el).onclick = () => { L.close(); pasteDlg(); };
       $('#m-clear', L.el).onclick = () => { L.close(); D.kunci = []; persist(); draw(); };
       const r = $('#m-reset', L.el); if (r) r.onclick = () => { L.close(); D = JSON.parse(JSON.stringify(base)); Store.del(dkey); draw(); };
+      const dl = $('#m-del', L.el); if (dl) dl.onclick = async () => {
+        L.close();
+        const res = await deleteFlow({ title: 'Hapus kunci jawaban?', text: 'Kunci ' + mapelNama(c.mapel) + ' Kelas ' + kelasNama(c.kelas) + ' akan dihapus permanen.', action: 'sesiDelete', data: { id: sesi.id } });
+        if (!res) return;
+        AppState.boot.sesi = AppState.boot.sesi.filter(x => x.id !== sesi.id);
+        AppState.boot.hasilIdx = AppState.boot.hasilIdx.filter(x => x[1] !== sesi.id);
+        Store.del(dkey); Store.del(userKey('hasil:' + ujianAktif())); saveBootLocal(); buildMaps(); route(true);
+      };
     }
     function pasteDlg() {
       const L = openLayer(`<div class="sh-h"><h3 class="grow">Tempel Teks Kunci</h3><button class="btn-icon" data-close>${ic('x')}</button></div>
@@ -520,7 +590,7 @@ registerPage('scan', {
     const c = AppState.ctx, sesi = sesiFor(c.mapel, c.kelas);
     if (!kunciLengkap(sesi)) {
       el.innerHTML = ctxHeader() + `<div class="card empty">${ic('key-round')}<h3>Kunci jawaban belum lengkap</h3><p style="margin-bottom:16px">Isi kunci jawaban ${esc(mapelNama(c.mapel))} Kelas ${esc(kelasNama(c.kelas))} terlebih dahulu sebelum memindai.</p><a class="btn btn-primary" href="#/kunci">${ic('key-round')} Isi Kunci Jawaban</a></div>`;
-      return;
+      bindCtx(el); return;
     }
     let filter = Store.get('scanFilter', 'semua'), q = '';
     const draw = () => {
@@ -537,9 +607,9 @@ registerPage('scan', {
           <div style="font:700 22px var(--font-b)" class="tnum">${p.pct}%</div></div>
         <div class="progress" style="background:rgba(255,255,255,.25);margin:10px 0 14px"><i style="width:${p.pct}%;background:#fff"></i></div>
         <button class="btn btn-block" id="sc-start" style="background:#fff;color:var(--brand);min-height:54px;font-size:16px">${ic('scan-line')} ${p.belum.length ? 'Mulai Scan' + (p.belum[0] ? ': ' + esc(p.belum[0].nama) : '') : 'Semua sudah di-scan'}</button>
-        <div class="row" style="justify-content:center;gap:16px;margin-top:10px;font-size:12.5px;opacity:.9"><span>${sesi.n} soal</span><span>·</span><span>${sesi.mode === 'Manual' ? 'Bobot manual' : 'Bagi rata'}</span><span>·</span><a href="#/kunci" style="color:#fff">Lihat kunci</a></div>
+        <div class="row" style="justify-content:center;gap:16px;margin-top:10px;font-size:12.5px;opacity:.9"><span>${sesi.n} soal</span><span>·</span><span>${sesi.mode === 'Manual' ? 'Bobot manual' : 'Bagi rata'}</span><span>·</span><a href="#/kunci" style="color:#fff">Lihat kunci</a><span>·</span><a href="#/template" style="color:#fff">Template LJK</a></div>
       </div>
-      <div class="toolbar" style="margin-top:14px"><div class="input-wrap">${ic('search')}<input class="input" id="sc-q" placeholder="Cari nama siswa atau NISN…" value="${esc(q)}"></div></div>
+      <div class="toolbar" style="margin-top:14px"><div class="input-wrap">${ic('search')}<input class="input" id="sc-q" placeholder="Cari nama siswa atau NISN…" value="${esc(q)}"></div><button class="btn btn-outline" id="sc-manual" title="Input jawaban tanpa kamera">${ic('keyboard')} <span>Input Manual</span></button></div>
       <div class="chips" style="margin-bottom:10px">${[['semua', 'Semua', all.length], ['belum', 'Belum', p.belum.length], ['sudah', 'Sudah', p.done], ['cek', 'Perlu dicek', nCek]].map(([k, t, n]) => `<button class="chip pick ${filter === k ? 'on' : ''}" data-f="${k}">${t} <span class="tnum" style="opacity:.75">${n}</span></button>`).join('')}</div>
       <div class="list" id="sc-list">${list.map(s => {
         const h = H[s.nisn];
@@ -547,6 +617,8 @@ registerPage('scan', {
         return `<button class="li" data-n="${esc(s.nisn)}"><span class="avatar sm" style="${h ? '' : 'background:var(--surface-3);color:var(--muted)'}">${esc(fmt.initials(s.nama))}</span>
           <div class="grow"><div class="nm ellip">${esc(s.nama)}</div><div class="sub mono">${esc(s.nisn)}</div></div>${h ? `<span class="score-pill">${fmt.num(h.nilai)}</span>` : ''}${st}</button>`;
       }).join('') || `<div class="empty">${ic('users')}<h3>${all.length ? 'Tidak ada yang cocok' : 'Belum ada siswa'}</h3><p>${all.length ? 'Ubah filter atau kata kunci.' : 'Minta admin menambahkan data siswa kelas ini.'}</p></div>`}</div>`;
+      bindCtx(el);
+      $('#sc-manual', el).onclick = () => pickStudent(sesi, n => manualEntry(sesi, n));
       $('#sc-start', el).onclick = () => { const b = progressOf(sesi, c.kelas).belum; if (b.length) openScanner(sesi, b[0].nisn); else toast('Semua siswa sudah di-scan. Ketuk nama untuk scan ulang.', 'info'); };
       $('#sc-q', el).oninput = e => { q = e.target.value.toLowerCase(); const pos = e.target.selectionStart; draw(); const i = $('#sc-q', el); i.focus(); i.setSelectionRange(pos, pos); };
       $$('[data-f]', el).forEach(b => b.onclick = () => { filter = b.dataset.f; Store.set('scanFilter', filter); draw(); });
@@ -648,12 +720,13 @@ async function onScanResult(r) {
   showScanResult(R);
 }
 /** Simpan ke antrean (langsung terkirim bila online) + perbarui indeks lokal. */
-function persistScan(R, withPhoto) {
-  const sesi = SC.sesi, n = sesi.n;
+function persistScan(R, withPhoto) { saveHasil(SC.sesi, SC.nisn, R, withPhoto); }
+function saveHasil(sesi, nisn, R, withPhoto) {
+  const n = sesi.n;
   const sc = OMR.score(R.jawaban.slice(0, n), sesi.kunci, sesi.mode, sesi.bobot ? sesi.bobot.split(',') : null);
   R.score = sc;
-  const data = { idScan: R.idScan, idSesi: sesi.id, nisn: SC.nisn, jawaban: R.jawaban, status: R.status === 'Dikoreksi manual' ? 'Dikoreksi manual' : '', waktu: new Date().toISOString(), local: { nilai: sc.nilai, status: R.status } };
-  AppState.pending = (AppState.pending || []).filter(x => !(x.action === 'hasilSave' && x.data.idSesi === sesi.id && x.data.nisn === SC.nisn));
+  const data = { idScan: R.idScan, idSesi: sesi.id, nisn, jawaban: R.jawaban, status: R.status === 'Dikoreksi manual' ? 'Dikoreksi manual' : '', waktu: new Date().toISOString(), local: { nilai: sc.nilai, status: R.status } };
+  AppState.pending = (AppState.pending || []).filter(x => !(x.action === 'hasilSave' && x.data.idSesi === sesi.id && x.data.nisn === nisn));
   AppState.pending.push({ action: 'hasilSave', data });
   buildMaps();
   Outbox.add('hasilSave', data);
@@ -662,11 +735,29 @@ function persistScan(R, withPhoto) {
     setTimeout(() => Outbox.add('fotoUpload', { idScan: R.idScan, data: foto }), 50);
   }
 }
+/** Input jawaban manual tanpa kamera (mis. lembar rusak / kamera bermasalah). */
+async function manualEntry(sesi, nisn) {
+  if (!(await confirmOverwrite(sesi, nisn))) return;
+  const s = AppState.maps.siswa.get(nisn) || { nama: nisn, nisn }, n = sesi.n, arr = Array(50).fill('-');
+  const fp = document.createElement('div'); fp.className = 'fullpage'; document.body.appendChild(fp);
+  fp.innerHTML = `<header class="topbar"><button class="btn-icon" data-x aria-label="Tutup">${ic('x')}</button><div class="grow"><div class="t1 ellip">Input Manual · ${esc(s.nama)}</div><div class="t2">${esc(mapelNama(sesi.mapel))} · Kelas ${esc(kelasNama(sesi.kelas))} · ${n} soal</div></div></header>
+    <div class="content" style="max-width:640px"><div class="info" style="margin-bottom:12px">${ic('keyboard')}<div>Ketuk jawaban siswa sesuai lembarnya. Biarkan <b>–</b> bila soal tidak dijawab. Nilai dihitung otomatis.</div></div>
+    <div id="me-rows">${Array.from({ length: n }, (_, i) => `<div class="krow" data-i="${i}"><div class="no tnum">${String(i + 1).padStart(2, '0')}</div><div class="opts">${'ABCD'.split('').map(o => `<button class="opt" data-o="${o}">${o}</button>`).join('')}<button class="opt on" data-o="-" aria-label="Kosong">–</button></div></div>`).join('')}</div></div>
+    <div class="fp-act"><div class="grow"><div class="small muted">Nilai sementara</div><b class="tnum" id="me-v" style="font:700 22px var(--font-b)">0</b></div><button class="btn btn-primary" id="me-save" style="flex:1.4">${ic('save')} <span>Simpan Nilai</span></button></div>`;
+  const upd = () => { $('#me-v', fp).textContent = fmt.num(OMR.score(arr.join('').slice(0, n), sesi.kunci, sesi.mode, sesi.bobot ? sesi.bobot.split(',') : null).nilai); };
+  $('#me-rows', fp).onclick = e => { const b = e.target.closest('.opt'); if (!b) return; const row = b.closest('.krow'); arr[+row.dataset.i] = b.dataset.o; $$('.opt', row).forEach(x => x.classList.toggle('on', x === b)); upd(); };
+  $('[data-x]', fp).onclick = () => fp.remove();
+  $('#me-save', fp).onclick = e => withBtn(e.currentTarget, async () => {
+    const R = { idScan: 'H' + uuid().replace(/-/g, '').slice(0, 12).toUpperCase(), jawaban: arr.join(''), status: 'Dikoreksi manual' };
+    saveHasil(sesi, nisn, R, false);
+    fp.remove(); toast('Nilai ' + s.nama + ' tersimpan: ' + fmt.num(R.score.nilai)); route(true);
+  });
+}
 function showScanResult(R) {
   const sesi = SC.sesi, n = sesi.n, s = AppState.maps.siswa.get(SC.nisn) || { nama: SC.nisn, nisn: SC.nisn };
   const fp = document.createElement('div'); fp.className = 'fullpage'; SC.wrap.appendChild(fp);
   const draw = () => {
-    const sc = R.score, kkm = Number(AppState.boot.settings.kkm) || 75, ragu = [];
+    const sc = R.score, kkm = kkmOf(sesi.mapel), ragu = [];
     for (let i = 0; i < n; i++) if (R.jawaban[i] === '*') ragu.push(i + 1);
     const p = progressOf(sesi, AppState.ctx.kelas), next = p.belum.find(x => x.nisn !== SC.nisn);
     const canvas = document.createElement('canvas'); drawMarkedSheet(canvas, R.warpedImg, R.res, sesi.kunci);
@@ -802,7 +893,8 @@ function itemStats(rows) {
   return out.filter(Boolean).map(o => Object.assign(o, { pb: o.total ? o.benar / o.total * 100 : 0, ps: o.total ? o.salah / o.total * 100 : 0, key: Object.keys(o.kunci).sort((a, b) => o.kunci[b] - o.kunci[a])[0] }));
 }
 function renderRingkasan(B, rows, f) {
-  const kkm = Number(AppState.boot.settings.kkm) || 75, n = rows.length, avg = n ? rows.reduce((s, r) => s + r.nilai, 0) / n : 0;
+  const kkm = f.mapel ? kkmOf(f.mapel) : kkmDefault(), n = rows.length, avg = n ? rows.reduce((s, r) => s + r.nilai, 0) / n : 0;
+  const tuntas = rows.filter(r => r.nilai >= kkmOf(r.mapel)).length;
   const cek = rows.filter(r => r.status === 'Perlu dicek').length;
   const byK = {}; rows.forEach(r => { (byK[r.kelas] = byK[r.kelas] || []).push(r.nilai); });
   const kelasAvg = Object.keys(byK).map(k => ({ k, nama: kelasNama(k), avg: byK[k].reduce((s, x) => s + x, 0) / byK[k].length, n: byK[k].length })).sort((a, b) => a.nama.localeCompare(b.nama, 'id', { numeric: true }));
@@ -811,9 +903,9 @@ function renderRingkasan(B, rows, f) {
   const maxBar = 100;
   B.innerHTML = `<div class="stats">
       <div class="stat"><div class="ic">${ic('clipboard-check')}</div><div class="muted small">Lembar Terkoreksi</div><div class="v">${n}</div></div>
-      <div class="stat"><div class="ic" style="background:var(--accent-soft);color:var(--accent-ink)">${ic('trending-up')}</div><div class="muted small">Rata-rata Nilai</div><div class="v">${fmt.num(avg)}</div><div class="small ${avg >= kkm ? '' : ''}" style="color:${avg >= kkm ? 'var(--ok-ink)' : 'var(--bad-ink)'}">KKM ${kkm} · ${avg >= kkm ? 'di atas' : 'di bawah'}</div></div>
+      <div class="stat"><div class="ic" style="background:var(--accent-soft);color:var(--accent-ink)">${ic('trending-up')}</div><div class="muted small">Rata-rata Nilai</div><div class="v">${fmt.num(avg)}</div><div class="small" style="color:${avg >= kkm ? 'var(--ok-ink)' : 'var(--bad-ink)'}">${f.mapel ? 'KKM ' + kkm : 'KKM per mapel'} · tuntas ${tuntas}/${n}${n ? ' (' + Math.round(tuntas / n * 100) + '%)' : ''}</div></div>
       <div class="stat"><div class="ic" style="background:var(--warn-soft);color:var(--warn-ink)">${ic('triangle-alert')}</div><div class="muted small">Perlu Dicek</div><div class="v">${cek}</div>${cek ? '<a class="small" href="#/hasil/daftar" id="go-cek">Lihat daftar →</a>' : '<div class="small muted">Semua jelas</div>'}</div></div>
-    <div class="card" style="margin-top:12px"><div class="card-h"><div><h3>Rata-rata Nilai per Kelas</h3><p class="muted small">${f.mapel ? esc(mapelNama(f.mapel)) : 'Semua mapel'} · garis putus = KKM</p></div><button class="btn-icon solid" data-tbl="t1" aria-label="Tampilkan tabel">${ic('table')}</button></div>
+    <div class="card" style="margin-top:12px"><div class="card-h"><div><h3>Rata-rata Nilai per Kelas</h3><p class="muted small">${f.mapel ? esc(mapelNama(f.mapel)) + ' · garis putus = KKM ' + kkm : 'Semua mapel · garis putus = KKM bawaan ' + kkm}</p></div><button class="btn-icon solid" data-tbl="t1" aria-label="Tampilkan tabel">${ic('table')}</button></div>
       ${kelasAvg.length ? `<div class="vbars">${kelasAvg.map(x => `<div class="vbar ${x.avg < kkm ? 'low' : ''}" title="Kelas ${esc(x.nama)}: ${fmt.num(x.avg)}"><b>${x.avg < kkm ? '! ' : ''}${fmt.num(x.avg)}</b><i style="height:${Math.max(4, x.avg / maxBar * 130)}px"></i><span>${esc(x.nama)}</span></div>`).join('')}
         <div class="kkm-line" style="bottom:${24 + kkm / maxBar * 130}px"><span>KKM ${kkm}</span></div></div>
         <div class="row between small" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"><span class="row" style="gap:6px">${ic('circle-check', 'sm')} ${kelasAvg.filter(x => x.avg >= kkm).length} dari ${kelasAvg.length} kelas mencapai KKM</span></div>
@@ -885,7 +977,7 @@ async function openHasilDetail(id, opt = {}) {
   const fp = document.createElement('div'); fp.className = 'fullpage'; document.body.appendChild(fp);
   const close = () => { fp.remove(); route(true); };
   const draw = () => {
-    const kkm = Number(AppState.boot.settings.kkm) || 75;
+    const kkm = kkmOf(r.mapel);
     fp.innerHTML = `<header class="topbar"><button class="btn-icon" id="hd-x" aria-label="Kembali">${ic('arrow-left')}</button><div class="grow"><div class="t1">Detail Hasil</div><div class="t2">${esc(mapelNama(r.mapel))} · Kelas ${esc(kelasNama(r.kelas))}</div></div>
       ${isAdmin() ? `<button class="btn-icon" id="hd-del" aria-label="Hapus" style="color:var(--bad)">${ic('trash-2')}</button>` : ''}</header>
       <div class="content" style="max-width:640px">
@@ -941,8 +1033,8 @@ function exportMenu(rows, f) {
         <button class="btn btn-soft btn-sm" data-x="butir" ${f.mapel ? '' : 'disabled'}>${ic('file-spreadsheet', 'sm')} <span>Excel</span></button><button class="btn btn-soft btn-sm" data-p="butir" ${f.mapel ? '' : 'disabled'}>${ic('file-text', 'sm')} <span>PDF</span></button></div>
     </div>`);
   const build = kind => {
-    if (kind === 'nilai') return { title: 'Rekap Nilai', cols: ['No', 'NISN', 'Nama', 'Kelas', 'Mapel', 'Benar', 'Salah', 'Kosong', 'Nilai', 'Status'],
-      rows: rows.slice().sort((a, b) => kelasNama(a.kelas).localeCompare(kelasNama(b.kelas), 'id', { numeric: true }) || mapelNama(a.mapel).localeCompare(mapelNama(b.mapel)) || a.nama.localeCompare(b.nama)).map((r, i) => [i + 1, r.nisn, r.nama, kelasNama(r.kelas), mapelNama(r.mapel), r.b, r.s, r.k, r.nilai, r.status]) };
+    if (kind === 'nilai') return { title: 'Rekap Nilai', cols: ['No', 'NISN', 'Nama', 'Kelas', 'Mapel', 'Benar', 'Salah', 'Kosong', 'Nilai', 'KKM', 'Ketuntasan', 'Status'],
+      rows: rows.slice().sort((a, b) => kelasNama(a.kelas).localeCompare(kelasNama(b.kelas), 'id', { numeric: true }) || mapelNama(a.mapel).localeCompare(mapelNama(b.mapel)) || a.nama.localeCompare(b.nama)).map((r, i) => [i + 1, r.nisn, r.nama, kelasNama(r.kelas), mapelNama(r.mapel), r.b, r.s, r.k, r.nilai, kkmOf(r.mapel), r.nilai >= kkmOf(r.mapel) ? 'Tuntas' : 'Belum tuntas', r.status]) };
     if (kind === 'belum') {
       const out = [], done = {}; rows.forEach(r => done[r.sesi + '|' + r.nisn] = 1);
       (AppState.boot.sesi || []).filter(s => s.ujian === f.ujian && (!f.mapel || s.mapel === f.mapel) && (!f.kelas || s.kelas === f.kelas)).forEach(s => {
@@ -1001,8 +1093,7 @@ registerPage('akun', {
     </div><div>
     ${isAdmin() ? `<div class="card hide-desk"><h3 style="margin-bottom:8px">Menu Admin</h3><div class="list">${[['pengaturan', 'Pengaturan & Tema', 'settings'], ['log', 'Log Aktivitas', 'history'], ['kunci', 'Kunci Jawaban', 'key-round']].map(([r, t, i]) => `<a class="li" href="#/${r}" style="text-decoration:none">${ic(i)}<div class="grow nm">${t}</div>${ic('chevron-right')}</a>`).join('')}</div></div>` : ''}
     ${installCard('')}
-    <div class="card"><h3 style="margin-bottom:8px">Lembar Jawaban</h3><p class="muted small" style="margin-bottom:12px">Template F4 (2 lembar per halaman). Fotokopi 100%, cetak hitam pekat, jangan menutup 4 kotak hitam di sudut.</p>
-      <a class="btn btn-soft btn-block" href="assets/template-lembar-jawaban-F4.pdf" download>${ic('file-down')} Unduh Template PDF</a></div>
+    <a class="card row" href="#/template" style="gap:12px;text-decoration:none;color:inherit"><span class="stat" style="padding:10px;margin:0;border:0;background:var(--primary-soft);color:var(--primary)">${ic('printer')}</span><div class="grow"><h3>Template Lembar Jawaban</h3><p class="muted small">A4 penuh, A4 / F4 dibagi dua, petunjuk pengisian, bisa berisi nama siswa</p></div>${ic('chevron-right')}</a>
     <div class="card"><div class="row between"><h3>Antrean Kirim</h3><button class="btn btn-soft btn-sm" id="ak-flush">${ic('cloud-upload')} <span>Kirim sekarang</span></button></div><div id="ak-q" class="small" style="margin-top:8px"></div></div>
     <div class="card"><div class="row between"><div><h3>Tentang</h3><p class="muted small">Kolej v${esc(window.KOLEJ_CONFIG.APP_VERSION)} · ${esc(AppState.boot.settings.nama_sekolah)}</p></div><button class="btn btn-ghost btn-sm" id="ak-perf">${ic('zap', 'sm')} Kecepatan</button></div></div>
     <button class="btn btn-danger btn-block" id="ak-out" style="margin-top:12px">${ic('log-out')} Keluar</button>
@@ -1030,6 +1121,84 @@ registerPage('akun', {
       $$('[data-del]', q).forEach(b => b.onclick = async () => { if (await confirmDlg({ title: 'Buang item gagal?', text: 'Data ini tidak akan dikirim ke server.', ok: 'Buang', danger: true })) Outbox.del(b.dataset.del); });
     };
     Outbox.all().then(drawQ); Outbox.on(drawQ);
+  }
+});
+
+/* ======================================================================
+   HALAMAN: Template Lembar Jawaban (unduh & cetak)
+   ====================================================================== */
+const TPL_FILES = { 'A4-1': 'assets/lembar-jawaban-A4-penuh.pdf', 'A4-2': 'assets/lembar-jawaban-A4-dibagi-dua.pdf', 'F4-2': 'assets/lembar-jawaban-F4-dibagi-dua.pdf' };
+const TPL_INFO = {
+  'A4-1': { t: 'A4 penuh', d: '1 lembar per halaman A4 (mendatar). Kotak paling besar (6,6 mm) — paling mudah diisi.', box: '6,6 mm', halves: 1, ratio: '297/210' },
+  'A4-2': { t: 'A4 dibagi dua', d: '2 lembar per halaman A4, digunting di tengah. Hemat kertas.', box: '4,8 mm', halves: 2, ratio: '210/297' },
+  'F4-2': { t: 'F4 dibagi dua', d: '2 lembar per halaman F4/Folio, digunting di tengah.', box: '5,5 mm', halves: 2, ratio: '215/330' }
+};
+function exSvg(kind, ok) {
+  const st = 'stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"';
+  const X = `<path d="M9 9 L31 31 M31 9 L9 31" ${st}/>`;
+  const m = { x: X, cancel: X + `<path d="M2 16 H38 M2 24 H38" ${st}/>`, circle: `<circle cx="20" cy="20" r="11" ${st}/>`, check: `<path d="M10 21 L17 29 L31 11" ${st}/>`,
+    fill: '<rect x="7" y="7" width="26" height="26" fill="currentColor"/>', dot: '<circle cx="20" cy="20" r="3.5" fill="currentColor"/>', small: '<path d="M27 7 L34 14 M34 7 L27 14" stroke="currentColor" stroke-width="2.5"/>', empty: '' };
+  return `<svg viewBox="0 0 40 40" width="44" height="44" style="color:${ok ? 'var(--text)' : 'var(--text)'}"><rect x="3" y="3" width="34" height="34" fill="var(--surface)" stroke="currentColor" stroke-width="2"/>${m[kind]}</svg>`;
+}
+registerPage('template', {
+  title: 'Template LJK',
+  render(el) {
+    const c = AppState.ctx || {};
+    let o = Object.assign({ format: 'A4-1', isi: 'kosong', pages: 1, petunjuk: true, mapel: c.mapel || (activeMapel()[0] || {}).id, kelas: c.kelas || (activeKelas()[0] || {}).id }, Store.get(userKey('tplOpt'), {}));
+    const save = () => Store.set(userKey('tplOpt'), o);
+    const draw = () => {
+      const studs = (AppState.maps.siswaByKelas[o.kelas] || []);
+      const per = TPL_INFO[o.format].halves, pages = o.isi === 'nama' ? Math.ceil(studs.length / per) : o.pages;
+      el.innerHTML = `<div class="page-h"><div class="grow"><h1>Template Lembar Jawaban</h1><p class="muted">Unduh, cetak, lalu fotokopi. Semua format terbaca pemindai Kolej.</p></div></div>
+      <div class="grid-2c"><div>
+      <div class="card"><h3 style="margin-bottom:12px">1. Pilih ukuran kertas</h3>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">${Object.keys(TPL_INFO).map(k => { const t = TPL_INFO[k]; return `
+          <button class="card tplf ${o.format === k ? 'on' : ''}" data-f="${k}" style="margin:0;padding:10px;cursor:pointer;text-align:center">
+            <div class="tpl-paper" style="aspect-ratio:${t.ratio}">${Array.from({ length: t.halves }, () => '<div class="tpl-half"><i></i><i></i><i></i><i></i><span></span></div>').join(t.halves > 1 ? '<div class="tpl-cut"></div>' : '')}</div>
+            <b style="display:block;margin-top:8px;font:700 13.5px var(--font-h)">${t.t}</b><span class="muted small">kotak ${t.box}</span></button>`; }).join('')}</div>
+        <p class="muted small" style="margin-top:10px">${esc(TPL_INFO[o.format].d)}</p></div>
+      <div class="card"><h3 style="margin-bottom:12px">2. Isi lembar</h3>
+        <div class="seg" id="tp-isi"><button data-v="kosong" class="${o.isi === 'kosong' ? 'on' : ''}">Kosong (untuk fotokopi)</button><button data-v="nama" class="${o.isi === 'nama' ? 'on' : ''}">Berisi nama siswa</button></div>
+        ${o.isi === 'kosong' ? `<div class="row between" style="margin-top:14px"><div><b>Jumlah halaman</b><div class="muted small">${pages * per} lembar jawaban</div></div>
+            <div class="stepper"><button id="tp-dec" aria-label="Kurangi">${ic('minus')}</button><input id="tp-n" class="tnum" inputmode="numeric" value="${o.pages}"><button id="tp-inc" aria-label="Tambah">${ic('plus')}</button></div></div>`
+          : `<div class="grid2" style="margin-top:14px">${'<div class="field" style="margin:0"><label>Mapel</label><select class="input" id="tp-m">' + activeMapel().map(m => `<option value="${esc(m.id)}" ${m.id === o.mapel ? 'selected' : ''}>${esc(m.nama)}</option>`).join('') + '</select></div>'}
+            ${'<div class="field" style="margin:0"><label>Kelas</label><select class="input" id="tp-k">' + activeKelas().map(k => `<option value="${esc(k.id)}" ${k.id === o.kelas ? 'selected' : ''}>Kelas ${esc(k.nama)}</option>`).join('') + '</select></div>'}</div>
+            <p class="muted small" style="margin-top:8px">Nama, NISN, kelas & mapel tercetak otomatis · ${studs.length} siswa → ${pages} halaman</p>`}
+        <label class="check" style="margin-top:10px"><input type="checkbox" id="tp-pet" ${o.petunjuk ? 'checked' : ''}><span>Sertakan halaman <b>petunjuk pengisian</b> (halaman 1)</span></label></div>
+      <div class="card"><button class="btn btn-primary btn-block" id="tp-go" style="min-height:54px;font-size:16px">${ic('file-down')} <span>Unduh PDF ${esc(TPL_INFO[o.format].t)}</span></button>
+        <div class="info" style="margin-top:12px">${ic('printer')}<div><b>Saat mencetak:</b> skala <b>100% / Ukuran sebenarnya</b> (jangan "Fit to page"), kertas <b>${o.format === 'F4-2' ? 'F4/Folio' : 'A4'}</b>${o.format === 'A4-1' ? ' posisi <b>mendatar</b>' : ''}. Fotokopi hitam pekat${per > 1 ? ', lalu gunting di garis putus-putus' : ''}.</div></div></div>
+      </div><div>
+      <div class="card"><h3 style="margin-bottom:4px">Petunjuk untuk siswa</h3><p class="muted small" style="margin-bottom:12px">Bacakan sebelum ujian agar lembar bisa dipindai</p>
+        <div class="label-sm" style="color:var(--ok-ink);margin-bottom:6px">${ic('circle-check', 'sm')} Benar</div>
+        <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:12px">
+          <div style="text-align:center">${exSvg('x', 1)}<div class="small">X besar</div></div>
+          <div style="text-align:center"><span style="display:inline-flex;gap:4px">${exSvg('cancel', 1)}${exSvg('x', 1)}</span><div class="small">Ganti: coret =, lalu X baru</div></div>
+          <div style="text-align:center">${exSvg('empty', 1)}<div class="small">Tidak menjawab</div></div></div>
+        <div class="label-sm" style="color:var(--bad-ink);margin-bottom:6px">${ic('circle-x', 'sm')} Salah (tidak terbaca / perlu dicek)</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:12px">${[['circle', 'Dilingkari'], ['check', 'Dicentang'], ['fill', 'Diarsir'], ['dot', 'Titik'], ['small', 'X kecil']].map(([k, t]) => `<div style="text-align:center">${exSvg(k)}<div class="small">${t}</div></div>`).join('')}</div>
+        <ul class="small" style="margin:0;padding-left:18px;line-height:1.7"><li>Pulpen <b>hitam/biru tua</b>; pensil tipis sulit terbaca.</li><li>Satu soal <b>satu</b> tanda X.</li><li><b>Jangan</b> mencoret/menutup 4 kotak hitam di sudut & batang hitam di kiri atas.</li><li><b>Jangan</b> dilipat, diremas, atau basah.</li></ul></div>
+      <div class="card"><h3 style="margin-bottom:4px">Unduhan cepat</h3><p class="muted small" style="margin-bottom:10px">PDF siap cetak (lembar kosong + petunjuk), tetap bisa diunduh tanpa internet</p>
+        <div class="list">${Object.keys(TPL_FILES).map(k => `<a class="li" href="${TPL_FILES[k]}" download style="text-decoration:none">${ic('file-down')}<div class="grow"><div class="nm">${TPL_INFO[k].t}</div><div class="sub">${esc(TPL_INFO[k].d)}</div></div>${ic('chevron-right')}</a>`).join('')}</div></div>
+      </div></div>`;
+      $$('.tplf', el).forEach(b => b.onclick = () => { o.format = b.dataset.f; save(); draw(); });
+      $$('#tp-isi button', el).forEach(b => b.onclick = () => { o.isi = b.dataset.v; save(); draw(); });
+      const setN = n => { o.pages = Math.max(1, Math.min(60, n | 0)); save(); draw(); };
+      if ($('#tp-dec', el)) { $('#tp-dec', el).onclick = () => setN(o.pages - 1); $('#tp-inc', el).onclick = () => setN(o.pages + 1); $('#tp-n', el).onchange = e => setN(+e.target.value); }
+      if ($('#tp-m', el)) { $('#tp-m', el).onchange = e => { o.mapel = e.target.value; save(); }; $('#tp-k', el).onchange = e => { o.kelas = e.target.value; save(); draw(); }; }
+      $('#tp-pet', el).onchange = e => { o.petunjuk = e.target.checked; save(); };
+      $('#tp-go', el).onclick = e => withBtn(e.currentTarget, async () => {
+        if (o.isi === 'nama' && !studs.length) return toast('Kelas ini belum punya siswa.', 'warn');
+        try {
+          const jsPDF = await loadJsPDF(), s = AppState.boot.settings;
+          const students = o.isi === 'nama' ? studs.map(x => ({ nama: x.nama, nisn: x.nisn, kelas: kelasNama(x.kelas), mapel: mapelNama(o.mapel) })) : null;
+          const doc = LJK.build(jsPDF, { format: o.format, sekolah: s.nama_sekolah, ujian: s.ujian_aktif, petunjuk: o.petunjuk, pages: o.pages, students });
+          const name = ['Lembar Jawaban', TPL_INFO[o.format].t, o.isi === 'nama' ? mapelNama(o.mapel) + ' Kelas ' + kelasNama(o.kelas) : ''].filter(Boolean).join(' - ').replace(/[\\/:*?"<>|]/g, '');
+          doc.save(name + '.pdf');
+          toast('PDF diunduh (' + doc.getNumberOfPages() + ' halaman).');
+        } catch (err) { toast(err.message, 'bad', 5000); }
+      });
+    };
+    draw();
   }
 });
 

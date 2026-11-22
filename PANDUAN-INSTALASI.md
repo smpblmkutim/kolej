@@ -1,6 +1,6 @@
 # Panduan Instalasi Kolej — Koreksi Lembar Jawaban
 
-SMP Budi Luhur Mandiri · versi 1.0.1 (bisa diinstal sebagai aplikasi / PWA)
+SMP Budi Luhur Mandiri · versi 1.1.0
 
 Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 
@@ -12,6 +12,17 @@ Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 Urutannya: **backend dulu** (untuk mendapat URL `/exec`), lalu isi URL itu ke frontend, lalu unggah frontend.
 
 ---
+
+## Yang baru di versi 1.1.0
+
+| Fitur | Di mana |
+|---|---|
+| **CRUD lengkap** — tambah, lihat, ubah, **hapus** untuk Guru, Mapel, Kelas, Siswa (bisa pilih banyak), Kunci Jawaban, dan Hasil (scan, **input manual**, koreksi, hapus) | Menu Data, Kunci (⋮ → Hapus), Scan (Input Manual), Hasil |
+| **KKM per mata pelajaran** — diatur admin di Data Mapel, atau oleh guru langsung di halaman Kunci Jawaban | Data Mapel · Kunci Jawaban |
+| **Tombol Ganti mapel/kelas lebih menonjol** — kartu biru di atas halaman Kunci & Scan, ganti cepat tanpa pindah halaman | Kunci · Scan |
+| **Template lembar jawaban** — A4 penuh (kotak besar), A4 dibagi dua, F4 dibagi dua, halaman petunjuk pengisian, bisa tercetak nama siswa | Menu **Template LJK** |
+
+**Memperbarui dari versi 1.0.x:** tempel `Kode.gs` baru → Simpan → jalankan **`setupKolej`** sekali lagi (aman, hanya menambah kolom **KKM** di sheet Mapel) → *Terapkan → Kelola deployment → ✏️ Edit → Versi baru*. Lalu ganti semua file frontend di repo GitHub dengan isi ZIP baru (isi ulang `GAS_URL`) dan `git push`.
 
 ## Bagian A — Backend (Google Apps Script)
 
@@ -113,26 +124,38 @@ Panduan singkat untuk dibagikan ke guru (WhatsApp/PDF): **`PANDUAN-PASANG-APLIKA
 ### C2. Siapkan data (Admin)
 1. **Pengaturan** → isi nama sekolah, **ujian aktif** (mis. *PAS Genap 2025/2026*), KKM, warna tema → **Simpan**.
 2. **Data Mapel** dan **Data Kelas** → sesuaikan (data contoh boleh dinonaktifkan).
-3. **Data Guru** → **Tambah** setiap guru + password awal. Berikan password itu ke guru; mereka wajib menggantinya saat login pertama. Nonaktifkan 2 guru contoh.
-4. **Data Siswa** → **Unduh Template** → isi di Excel (kolom NISN sudah berformat teks) → **Impor Excel** → periksa pratinjau (baris merah = perlu diperbaiki) → **Simpan Data Valid**.
+3. **Data Mapel** → atur **KKM** tiap mapel (kosong = KKM bawaan dari Pengaturan).
+4. **Data Guru** → **Tambah** setiap guru + password awal. Berikan password itu ke guru; mereka wajib menggantinya saat login pertama. Nonaktifkan 2 guru contoh.
+5. **Data Siswa** → **Unduh Template** → isi di Excel (kolom NISN sudah berformat teks) → **Impor Excel** → periksa pratinjau (baris merah = perlu diperbaiki) → **Simpan Data Valid**.
 
 ### C3. Cetak lembar jawaban
-- Menu **Akun** → **Unduh Template PDF** (file `assets/template-lembar-jawaban-F4.pdf`).
-- Cetak di kertas **F4**, skala **100%** (jangan "Fit to page"), lalu gunting di garis putus-putus → 2 lembar per F4.
-- Fotokopi dengan hasil **hitam pekat**. Keempat **kotak hitam di sudut** dan **batang hitam kecil di kiri atas** jangan terpotong/tertutup.
-- Petunjuk untuk siswa (sudah tercetak di lembar):
-  - Beri tanda **X** di kotak jawaban.
-  - Ganti jawaban: coret X lama dengan **dua garis mendatar (=)**, lalu beri X di kotak baru.
+Buka menu **Template LJK** (sidebar laptop, menu Data untuk admin di HP, atau Akun → Template Lembar Jawaban).
+
+| Format | Isi per halaman | Ukuran kotak | Cocok untuk |
+|---|---|---|---|
+| **A4 penuh** | 1 lembar (A4 mendatar) | 6,6 mm | Paling mudah diisi siswa |
+| **A4 dibagi dua** | 2 lembar, digunting | 4,8 mm | Hemat kertas A4 |
+| **F4 dibagi dua** | 2 lembar, digunting | 5,5 mm | Kertas F4/Folio |
+
+- **Kosong (untuk fotokopi)** atau **Berisi nama siswa** — nama, NISN, kelas, dan mapel tercetak otomatis per siswa.
+- Centang **halaman petunjuk pengisian** (halaman 1): contoh cara mengisi yang benar & salah, untuk dibacakan/ditempel sebelum ujian.
+- **Unduhan cepat**: PDF siap cetak ketiga format tetap bisa diunduh tanpa internet.
+- Cetak skala **100% / Ukuran sebenarnya** (jangan *Fit to page*). Fotokopi hitam pekat. Keempat **kotak hitam di sudut** dan **batang hitam kecil di kiri atas** jangan terpotong/tertutup.
+- Semua format dibaca pemindai yang sama (uji: 12 foto sintetis tiga format — terang, miring, redup, fotokopi — 100% terbaca).
+
+**Cara mengisi yang benar (bacakan ke siswa):** pulpen hitam/biru tua, tanda **X besar** di dalam kotak, satu soal satu X. Ganti jawaban: coret X lama dengan **dua garis mendatar (=)**, lalu X di kotak baru. Jangan dilingkari, dicentang, diarsir, atau diberi titik.
 
 ### C4. Alur Guru
 1. Login: pilih nama → password → (login pertama: ganti password).
 2. **Pilih Mapel & Kelas.**
-3. **Kunci:** ketuk A–D tiap soal, atau ⋮ → **Tempel teks kunci** (mis. `ABCDABCD…`). Atur jumlah soal (1–50) dan mode skor (Bagi Rata / Atur Manual) → **Simpan Kunci**.
+3. **Kunci:** atur **KKM** mapel bila perlu, lalu ketuk A–D tiap soal, atau ⋮ → **Tempel teks kunci** (mis. `ABCDABCD…`). Atur jumlah soal (1–50) dan mode skor (Bagi Rata / Atur Manual) → **Simpan Kunci**.
    Bisa juga **Salin Kelas Lain** untuk mapel yang sama.
-4. **Scan:** ketuk **Mulai Scan** (izinkan kamera) → arahkan ke lembar, keempat kotak hitam masuk layar → tahan diam ±1 detik → **beep** → nilai & tanda hijau/merah muncul.
-5. Ada soal kuning **Perlu Dicek** (X ganda / coretan tidak jelas)? Ketuk **Tinjau** → pilih jawaban yang dimaksud siswa.
-6. Ketuk **Lanjut: (nama berikutnya)** → ganti kertas → aplikasi otomatis menunggu kertas baru sebelum memindai lagi.
-7. **Hasil:** ringkasan, grafik rata-rata per kelas, 10 soal paling sering salah/benar, daftar nilai, koreksi manual, unduh Excel/PDF.
+4. Ganti mapel/kelas kapan saja lewat tombol biru **Ganti** di kartu atas.
+5. **Scan:** ketuk **Mulai Scan** (izinkan kamera) → arahkan ke lembar, keempat kotak hitam masuk layar → tahan diam ±1 detik → **beep** → nilai & tanda hijau/merah muncul.
+6. Ada soal kuning **Perlu Dicek** (X ganda / coretan tidak jelas)? Ketuk **Tinjau** → pilih jawaban yang dimaksud siswa.
+7. Ketuk **Lanjut: (nama berikutnya)** → ganti kertas → aplikasi otomatis menunggu kertas baru sebelum memindai lagi.
+8. **Input Manual** (tanpa kamera): tombol **Input Manual** di halaman Scan → pilih siswa → ketuk jawabannya.
+9. **Hasil:** ringkasan, grafik rata-rata per kelas, 10 soal paling sering salah/benar, daftar nilai, koreksi manual, unduh Excel/PDF.
 
 **Tips scan:** cahaya terang merata (pakai tombol senter bila redup), kertas rata di meja, HP sejajar kertas, volume media HP menyala untuk mendengar beep.
 
@@ -197,6 +220,7 @@ Di editor Apps Script, jalankan **`cekPerforma`** untuk melihat ukuran penyimpan
 | Kartu **Pasang Kolej** tidak muncul | Sudah terpasang, dibuka dari dalam WhatsApp/Instagram, atau bukan HTTPS | Buka di Chrome (Android/laptop) atau Safari (iPhone) lewat `https://` |
 | Setelah update tampilan masih lama | Versi belum dinaikkan | Jalankan `tools/bump_version.py`, push ulang; di HP tutup-buka aplikasi |
 | "Sesi berakhir" | Token 6 jam habis | Masukkan password lagi; hasil di antrean HP tidak hilang |
+| "Tidak bisa dihapus" | Data masih dipakai (mis. mapel sudah punya kunci, kelas masih berisi siswa) | Pilih **Nonaktifkan saja** agar riwayat nilai tetap utuh, atau hapus data terkaitnya dulu |
 | Guru lupa password | — | Admin → Data Guru → ikon 🔑 Reset password |
 | Akun dikunci 15 menit | 5 kali salah password | Tunggu 15 menit atau Admin reset password |
 
@@ -213,8 +237,8 @@ kolej-frontend.zip          → frontend; isi ZIP = isi repository GitHub
    ├── index.html, manifest.webmanifest, sw.js, pwa.js, offline.html, README.md
    ├── css/style.css
    ├── js/config.js  ← isi GAS_URL di sini
-   ├── js/core.js, app.js, admin.js, scanner.js, scan-worker.js, omr.js, icons.js
-   ├── assets/template-lembar-jawaban-F4.pdf
+   ├── js/core.js, app.js, admin.js, scanner.js, scan-worker.js, omr.js, template.js, icons.js
+   ├── assets/lembar-jawaban-A4-penuh.pdf, -A4-dibagi-dua.pdf, -F4-dibagi-dua.pdf
    ├── icons/ (192, 512, maskable, apple-touch, favicon)
    └── tools/bump_version.py   ← naikkan versi sebelum setiap update
 ```

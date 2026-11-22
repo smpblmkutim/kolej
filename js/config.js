@@ -4,5 +4,5 @@
    ========================================================================== */
 window.KOLEJ_CONFIG = {
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwGY2NDe4KsV0P_B2sdLS1NC5KAKvRQaV0sVirFAlA9KyYeWTaxr3CjIh4xmZkgGbYo/exec',
-  APP_VERSION: '1.0.1'
+  APP_VERSION: '1.1.0'
 };

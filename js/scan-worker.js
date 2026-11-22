@@ -1,5 +1,5 @@
 /* Worker pemindai — menjalankan OMR di luar thread tampilan agar kamera tetap mulus */
-importScripts('omr.js?v=1.0.1');
+importScripts('omr.js?v=1.1.0');
 self.onmessage = function (e) {
   const m = e.data;
   try {
