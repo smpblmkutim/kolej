@@ -1,0 +1,345 @@
+/* ==========================================================================
+   Kolej — Mesin Pembaca Lembar Jawaban (OMR) ringan, tanpa OpenCV
+   - Mendeteksi 4 penanda hitam di sudut, meluruskan (homografi), membaca kotak.
+   - Berjalan penuh di HP; fungsi murni sehingga bisa diuji di Node.
+   Geometri LAYOUT harus sama dengan tools/make_template.py (template v1).
+   ========================================================================== */
+(function (root) {
+  'use strict';
+
+  const LAYOUT = {
+    version: 1,
+    w: 215, h: 165,                                   // ukuran setengah F4 (mm)
+    markers: [[12, 12], [203, 12], [203, 153], [12, 153]], // TL, TR, BR, BL (pusat, mm)
+    msize: 7,
+    orient: [30, 12],                                 // batang orientasi (pusat)
+    paperRef: [52, 12],                               // titik kertas kosong pembanding
+    box: 5.5, x0: 11, blockW: 35, gap: 4.5, label: 7, pitch: 7,
+    y0: 61, rowPitch: 9, rows: 10, cols: 5, questions: 50
+  };
+  const S = 5;                                        // piksel per mm hasil pelurusan
+  const OUT_W = LAYOUT.w * S, OUT_H = LAYOUT.h * S;
+
+  const SENS = {                                      // ambang per tingkat sensitivitas
+    rendah: { empty: 0.06, mark: 0.11, filled: 0.62, line: 0.72 },
+    sedang: { empty: 0.05, mark: 0.09, filled: 0.60, line: 0.68 },
+    tinggi: { empty: 0.04, mark: 0.07, filled: 0.58, line: 0.64 }
+  };
+
+  function boxCenter(q) {                              // q: 1..50 → pusat kotak (mm)
+    const b = Math.floor((q - 1) / 10), i = (q - 1) % 10;
+    const bx = LAYOUT.x0 + b * (LAYOUT.blockW + LAYOUT.gap);
+    const cy = LAYOUT.y0 + i * LAYOUT.rowPitch;
+    const out = [];
+    for (let j = 0; j < 4; j++) out.push([bx + LAYOUT.label + LAYOUT.pitch / 2 + j * LAYOUT.pitch, cy]);
+    return out;
+  }
+
+  /* ---------------- Gambar dasar ---------------- */
+  function toGray(img) {                               // ImageData-like → {w,h,d}
+    const n = img.width * img.height, d = new Uint8Array(n), s = img.data;
+    for (let i = 0, j = 0; i < n; i++, j += 4) d[i] = (s[j] * 77 + s[j + 1] * 150 + s[j + 2] * 29) >> 8;
+    return { w: img.width, h: img.height, d };
+  }
+  function downscale(g, maxDim) {
+    const f = Math.max(g.w, g.h) / maxDim;
+    if (f <= 1) return { g, f: 1 };
+    const w = Math.round(g.w / f), h = Math.round(g.h / f), d = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const sy = Math.min(g.h - 1, Math.floor(y * f));
+      for (let x = 0; x < w; x++) d[y * w + x] = g.d[sy * g.w + Math.min(g.w - 1, Math.floor(x * f))];
+    }
+    return { g: { w, h, d }, f };
+  }
+  function integral(g) {
+    const W = g.w + 1, I = new Float64Array(W * (g.h + 1));
+    for (let y = 0; y < g.h; y++) {
+      let row = 0;
+      for (let x = 0; x < g.w; x++) { row += g.d[y * g.w + x]; I[(y + 1) * W + x + 1] = I[y * W + x + 1] + row; }
+    }
+    return I;
+  }
+  function boxMean(I, W1, w, h, x, y, r) {
+    const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
+    return (I[y1 * W1 + x1] - I[y0 * W1 + x1] - I[y1 * W1 + x0] + I[y0 * W1 + x0]) / ((x1 - x0) * (y1 - y0));
+  }
+  function binarize(g, r, k, minDiff) {                // gelap relatif terhadap sekitar
+    const I = integral(g), W1 = g.w + 1, b = new Uint8Array(g.w * g.h);
+    for (let y = 0; y < g.h; y++) for (let x = 0; x < g.w; x++) {
+      const m = boxMean(I, W1, g.w, g.h, x, y, r), v = g.d[y * g.w + x];
+      if (v < m * k && m - v > minDiff) b[y * g.w + x] = 1;
+    }
+    return b;
+  }
+
+  /* ---------------- Deteksi penanda ---------------- */
+  function components(b, w, h, maxArea) {
+    const lab = new Int32Array(w * h), out = [], stack = new Int32Array(w * h);
+    let id = 0;
+    for (let p = 0; p < w * h; p++) {
+      if (!b[p] || lab[p]) continue;
+      id++; let sp = 0; stack[sp++] = p; lab[p] = id;
+      let area = 0, sx = 0, sy = 0, x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, big = false;
+      while (sp) {
+        const q = stack[--sp], x = q % w, y = (q - x) / w;
+        area++; sx += x; sy += y;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (area > maxArea) big = true;
+        if (x > 0 && b[q - 1] && !lab[q - 1]) { lab[q - 1] = id; stack[sp++] = q - 1; }
+        if (x < w - 1 && b[q + 1] && !lab[q + 1]) { lab[q + 1] = id; stack[sp++] = q + 1; }
+        if (y > 0 && b[q - w] && !lab[q - w]) { lab[q - w] = id; stack[sp++] = q - w; }
+        if (y < h - 1 && b[q + w] && !lab[q + w]) { lab[q + w] = id; stack[sp++] = q + w; }
+      }
+      if (!big) out.push({ area, cx: sx / area, cy: sy / area, bw: x1 - x0 + 1, bh: y1 - y0 + 1 });
+    }
+    return out;
+  }
+  function orderCW(pts) {
+    const cx = pts.reduce((s, p) => s + p.x, 0) / 4, cy = pts.reduce((s, p) => s + p.y, 0) / 4;
+    return pts.slice().sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  }
+  function quadArea(p) {
+    let a = 0; for (let i = 0; i < 4; i++) { const q = p[(i + 1) % 4]; a += p[i].x * q.y - q.x * p[i].y; }
+    return Math.abs(a) / 2;
+  }
+  function isConvex(p) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = p[i], b = p[(i + 1) % 4], c = p[(i + 2) % 4];
+      const cr = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (cr === 0) return false; const s = cr > 0 ? 1 : -1;
+      if (!sign) sign = s; else if (s !== sign) return false;
+    }
+    return true;
+  }
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const EXP_RATIO = (LAYOUT.markers[1][0] - LAYOUT.markers[0][0]) / (LAYOUT.markers[3][1] - LAYOUT.markers[0][1]);
+  const EXP_MREL = LAYOUT.msize / (LAYOUT.markers[1][0] - LAYOUT.markers[0][0]);
+
+  /** Cari 4 penanda pada citra abu-abu. Return {pts:[4 titik CW], score} atau null. */
+  function findMarkers(g) {
+    const r = Math.max(8, Math.round(Math.max(g.w, g.h) / 14));
+    const b = binarize(g, r, 0.72, 25);
+    const maxSide = Math.max(g.w, g.h) * 0.09;
+    const comps = components(b, g.w, g.h, maxSide * maxSide * 1.3);
+    let c = comps.filter(o => {
+      const side = Math.max(o.bw, o.bh), asp = o.bw / o.bh, fill = o.area / (o.bw * o.bh);
+      return side >= 5 && side <= maxSide && asp > 0.5 && asp < 2 && fill > 0.68;
+    }).sort((a, b) => b.area - a.area).slice(0, 14);
+    if (c.length < 4) return null;
+    let best = null;
+    const n = c.length;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) for (let l = k + 1; l < n; l++) {
+      const set = [c[i], c[j], c[k], c[l]];
+      const amax = Math.max(...set.map(s => s.area)), amin = Math.min(...set.map(s => s.area));
+      if (amax / amin > 3.2) continue;
+      const p = orderCW(set.map(s => ({ x: s.cx, y: s.cy, a: s.area })));
+      if (!isConvex(p)) continue;
+      const s0 = dist(p[0], p[1]), s1 = dist(p[1], p[2]), s2 = dist(p[2], p[3]), s3 = dist(p[3], p[0]);
+      if (Math.min(s0, s2) / Math.max(s0, s2) < 0.55 || Math.min(s1, s3) / Math.max(s1, s3) < 0.55) continue;
+      const A = (s0 + s2) / 2, B = (s1 + s3) / 2, ratio = Math.max(A, B) / Math.min(A, B);
+      if (ratio < 1.05 || ratio > 1.9) continue;
+      const mside = Math.sqrt(set.reduce((s, o) => s + o.area, 0) / 4);
+      const mrel = mside / Math.max(A, B);
+      if (mrel < EXP_MREL * 0.45 || mrel > EXP_MREL * 2.2) continue;
+      const area = quadArea(p);
+      if (area < g.w * g.h * 0.08) continue;
+      const score = area * Math.exp(-Math.pow((ratio - EXP_RATIO) / 0.13, 2)) * (1 - Math.min(0.6, Math.abs(Math.log(mrel / EXP_MREL)) / 2));
+      if (!best || score > best.score) best = { pts: p, score };
+    }
+    return best;
+  }
+
+  /* ---------------- Homografi ---------------- */
+  function solve(A, b) {                               // eliminasi Gauss 8x8
+    const n = b.length;
+    for (let i = 0; i < n; i++) {
+      let p = i; for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[p][i])) p = r;
+      [A[i], A[p]] = [A[p], A[i]]; [b[i], b[p]] = [b[p], b[i]];
+      if (Math.abs(A[i][i]) < 1e-12) return null;
+      for (let r = i + 1; r < n; r++) { const f = A[r][i] / A[i][i]; for (let c = i; c < n; c++) A[r][c] -= f * A[i][c]; b[r] -= f * b[i]; }
+    }
+    const x = new Array(n);
+    for (let i = n - 1; i >= 0; i--) { let s = b[i]; for (let c = i + 1; c < n; c++) s -= A[i][c] * x[c]; x[i] = s / A[i][i]; }
+    return x;
+  }
+  function homography(src, dst) {                      // src[i]=[x,y] → dst[i]=[x,y]
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = src[i], [u, v] = dst[i];
+      A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+      A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+    }
+    const h = solve(A, b); if (!h) return null; h.push(1); return h;
+  }
+  function apply(H, x, y) { const z = H[6] * x + H[7] * y + H[8]; return [(H[0] * x + H[1] * y + H[2]) / z, (H[3] * x + H[4] * y + H[5]) / z]; }
+
+  function sampleGray(g, x, y) {
+    if (x < 0 || y < 0 || x >= g.w - 1 || y >= g.h - 1) return 255;
+    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * g.w + x0, d = g.d;
+    return (d[i] * (1 - fx) + d[i + 1] * fx) * (1 - fy) + (d[i + g.w] * (1 - fx) + d[i + g.w + 1] * fx) * fy;
+  }
+  function meanAround(g, H, mx, my, rmm) {
+    let s = 0, n = 0;
+    for (let dy = -rmm; dy <= rmm; dy += rmm / 3) for (let dx = -rmm; dx <= rmm; dx += rmm / 3) {
+      const [x, y] = apply(H, mx + dx, my + dy); s += sampleGray(g, x, y); n++;
+    }
+    return s / n;
+  }
+  /** Perbaiki pusat penanda di resolusi penuh: pusat massa piksel gelap di jendela. */
+  function refineMarker(g, p, half) {
+    const x0 = Math.max(0, Math.round(p.x - half)), x1 = Math.min(g.w - 1, Math.round(p.x + half));
+    const y0 = Math.max(0, Math.round(p.y - half)), y1 = Math.min(g.h - 1, Math.round(p.y + half));
+    let mn = 255, mx = 0;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const v = g.d[y * g.w + x]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    const t = (mn + mx) / 2; let sx = 0, sy = 0, n = 0;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (g.d[y * g.w + x] < t) { sx += x; sy += y; n++; }
+    return n ? { x: sx / n, y: sy / n } : p;
+  }
+
+  /** Pilih rotasi (0..3) yang batang orientasinya paling gelap. */
+  function solveOrientation(g, pts) {
+    let best = null;
+    for (let r = 0; r < 4; r++) {
+      const dst = [0, 1, 2, 3].map(i => [pts[(i + r) % 4].x, pts[(i + r) % 4].y]);
+      const H = homography(LAYOUT.markers, dst); if (!H) continue;
+      const bar = meanAround(g, H, LAYOUT.orient[0], LAYOUT.orient[1], 1.3);
+      const paper = meanAround(g, H, LAYOUT.paperRef[0], LAYOUT.paperRef[1], 1.5);
+      const s0 = dist(pts[r % 4], pts[(r + 1) % 4]), s1 = dist(pts[(r + 1) % 4], pts[(r + 2) % 4]);
+      const contrast = (paper - bar) * (s0 > s1 ? 1 : 0.3);  // sisi atas harus sisi panjang
+      if (!best || contrast > best.contrast) best = { H, r, contrast };
+    }
+    return best;
+  }
+
+  /** Luruskan ke citra warna OUT_W x OUT_H (ImageData-like). */
+  function warp(img, H) {
+    const out = new Uint8ClampedArray(OUT_W * OUT_H * 4), s = img.data, W = img.width, Hh = img.height;
+    for (let v = 0; v < OUT_H; v++) {
+      const my = (v + 0.5) / S;
+      for (let u = 0; u < OUT_W; u++) {
+        const mx = (u + 0.5) / S;
+        const z = H[6] * mx + H[7] * my + H[8];
+        const x = (H[0] * mx + H[1] * my + H[2]) / z, y = (H[3] * mx + H[4] * my + H[5]) / z;
+        const o = (v * OUT_W + u) * 4;
+        if (x < 0 || y < 0 || x >= W - 1 || y >= Hh - 1) { out[o] = out[o + 1] = out[o + 2] = 255; out[o + 3] = 255; continue; }
+        const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = (y0 * W + x0) * 4, j = i + W * 4;
+        const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+        out[o] = s[i] * w00 + s[i + 4] * w10 + s[j] * w01 + s[j + 4] * w11;
+        out[o + 1] = s[i + 1] * w00 + s[i + 5] * w10 + s[j + 1] * w01 + s[j + 5] * w11;
+        out[o + 2] = s[i + 2] * w00 + s[i + 6] * w10 + s[j + 2] * w01 + s[j + 6] * w11;
+        out[o + 3] = 255;
+      }
+    }
+    return { width: OUT_W, height: OUT_H, data: out };
+  }
+
+  /* ---------------- Pembacaan kotak ---------------- */
+  function readWarped(warped, sensName) {
+    const T = SENS[sensName] || SENS.sedang;
+    const g = toGray(warped);
+    const B = binarize(g, Math.round(4 * S), 0.86, 14);
+    const W = g.w, half = LAYOUT.box * S / 2;
+    const dark = (x, y) => (x >= 0 && y >= 0 && x < W && y < g.h) ? B[y * W + x] : 0;
+    const per = [];                                    // titik keliling relatif
+    const hs = Math.round(half);
+    for (let t = -hs; t <= hs; t += 1) { per.push([t, -hs], [t, hs], [-hs, t], [hs, t]); }
+    function borderScore(cx, cy) {
+      let hit = 0;
+      for (const [dx, dy] of per) {
+        const x = cx + dx, y = cy + dy;
+        if (dark(x, y) || dark(x + (dx === hs ? 1 : dx === -hs ? -1 : 0), y + (dy === hs ? 1 : dy === -hs ? -1 : 0))) hit++;
+      }
+      return hit / per.length;
+    }
+    const answers = [], detail = [], boxes = [];
+    let qSum = 0, qN = 0;
+    const inset = Math.round(0.75 * S), ih = hs - inset;
+    for (let q = 1; q <= LAYOUT.questions; q++) {
+      const states = [], ratios = [];
+      const centers = boxCenter(q);
+      for (let j = 0; j < 4; j++) {
+        const ex = Math.round(centers[j][0] * S), ey = Math.round(centers[j][1] * S);
+        let best = { s: -1, x: ex, y: ey };
+        for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+          const sc = borderScore(ex + dx, ey + dy) - (Math.abs(dx) + Math.abs(dy)) * 0.004;
+          if (sc > best.s) best = { s: sc, x: ex + dx, y: ey + dy };
+        }
+        qSum += best.s; qN++;
+        // rasio tinta di bagian dalam + deteksi garis mendatar
+        let ink = 0, tot = 0, lines = 0, run = 0, gapRun = 0, runs = [];
+        for (let y = best.y - ih; y <= best.y + ih; y++) {
+          let rowInk = 0;
+          for (let x = best.x - ih; x <= best.x + ih; x++) { const d = dark(x, y); rowInk += d; }
+          ink += rowInk; tot += 2 * ih + 1;
+          // garis coretan: tinta mendatar memanjang (cek juga melampaui tepi kotak)
+          // panjang tinta bersambung terpanjang (garis "=" bersambung; lengan X terpisah)
+          let longest = 0, cur = 0;
+          for (let x = best.x - hs + 2; x <= best.x + hs - 2; x++) { if (dark(x, y)) { cur++; if (cur > longest) longest = cur; } else cur = 0; }
+          const isLine = longest / (2 * hs - 3) >= T.line;
+          if (isLine) { run++; gapRun = 0; }
+          else if (run && gapRun < 1) { gapRun++; }
+          else { if (run) runs.push(run); run = 0; gapRun = 0; }
+        }
+        if (run) runs.push(run);
+        lines = runs.filter(r => r <= (2 * ih + 1) * 0.45).length;
+        const ratio = ink / tot;
+        let st;
+        if (ratio < T.empty) st = 'e';
+        else if (lines >= 2) st = 'c';                // dicoret dua garis
+        else if (lines === 1) st = 'u';               // satu garis → tidak jelas
+        else if (ratio > T.filled) st = 'u';          // dihitamkan penuh
+        else if (ratio >= T.mark) st = 'm';
+        else st = 'u';                                // tipis/ragu
+        states.push(st); ratios.push(Math.round(ratio * 100) / 100);
+        boxes.push({ q, j, x: best.x, y: best.y });
+      }
+      const marks = [], unclear = states.includes('u');
+      states.forEach((s, j) => { if (s === 'm') marks.push(j); });
+      let a;
+      if (unclear) a = '*';
+      else if (marks.length === 1) a = 'ABCD'[marks[0]];
+      else if (marks.length === 0) a = '-';
+      else a = '*';
+      answers.push(a);
+      detail.push({ q, states: states.join(''), ratios });
+    }
+    return { jawaban: answers.join(''), detail, boxes, quality: qSum / qN, half };
+  }
+
+  /** Proses satu frame penuh. img = ImageData-like (RGBA). */
+  function analyze(img, opts) {
+    opts = opts || {};
+    const gFull = toGray(img);
+    const ds = downscale(gFull, 900);
+    const found = findMarkers(ds.g);
+    if (!found) return { ok: false, reason: 'markers' };
+    const msPx = Math.max(6, Math.sqrt(found.pts.reduce((s, p) => s + p.a, 0) / 4) * ds.f);
+    const pts = found.pts.map(p => refineMarker(gFull, { x: p.x * ds.f, y: p.y * ds.f }, msPx * 1.1));
+    const ori = solveOrientation(gFull, pts);
+    if (!ori || ori.contrast < 25) return { ok: false, reason: 'orientation' };
+    const warped = warp(img, ori.H);
+    const res = readWarped(warped, opts.sens);
+    if (res.quality < 0.75) return { ok: false, reason: 'blur', quality: res.quality, warped };
+    return Object.assign({ ok: true, warped, corners: pts }, res);
+  }
+
+  /* ---------------- Penilaian (sama dengan server) ---------------- */
+  function score(jawaban, kunci, mode, bobot) {
+    const n = kunci.length; let benar = 0, salah = 0, kosong = 0, ragu = 0, skor = 0, total = 0;
+    const w = (mode === 'Manual' && bobot && bobot.length) ? bobot.map(Number) : null;
+    for (let i = 0; i < n; i++) {
+      const a = jawaban.charAt(i) || '-', k = kunci.charAt(i), bw = w ? (w[i] || 0) : 100 / n;
+      total += bw;
+      if (a === k) { benar++; skor += bw; }
+      else if (a === '-') kosong++;
+      else if (a === '*') { ragu++; kosong++; }
+      else salah++;
+    }
+    const nilai = total ? Math.round(skor / total * 10000) / 100 : 0;
+    return { benar, salah, kosong, ragu, skor: Math.round(skor * 100) / 100, nilai };
+  }
+
+  root.OMR = { LAYOUT, S, OUT_W, OUT_H, SENS, boxCenter, toGray, downscale, findMarkers, homography, apply, warp, readWarped, analyze, score, refineMarker, solveOrientation };
+  if (typeof module !== 'undefined') module.exports = root.OMR;
+})(typeof window !== 'undefined' ? window : globalThis);
