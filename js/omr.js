@@ -45,9 +45,14 @@
     const f = Math.max(g.w, g.h) / maxDim;
     if (f <= 1) return { g, f: 1 };
     const w = Math.round(g.w / f), h = Math.round(g.h / f), d = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) {
-      const sy = Math.min(g.h - 1, Math.floor(y * f));
-      for (let x = 0; x < w; x++) d[y * w + x] = g.d[sy * g.w + Math.min(g.w - 1, Math.floor(x * f))];
+    for (let y = 0; y < h; y++) {                        // rata-rata blok (bukan cuplik 1 piksel) → noise teredam
+      const y0 = Math.floor(y * f), y1 = Math.min(g.h, Math.max(y0 + 1, Math.floor((y + 1) * f)));
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.floor(x * f), x1 = Math.min(g.w, Math.max(x0 + 1, Math.floor((x + 1) * f)));
+        let sum = 0, n = 0;
+        for (let yy = y0; yy < y1; yy += (y1 - y0 > 2 ? 2 : 1)) for (let xx = x0; xx < x1; xx += (x1 - x0 > 2 ? 2 : 1)) { sum += g.d[yy * g.w + xx]; n++; }
+        d[y * w + x] = sum / n;
+      }
     }
     return { g: { w, h, d }, f };
   }
@@ -62,6 +67,29 @@
   function boxMean(I, W1, w, h, x, y, r) {
     const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
     return (I[y1 * W1 + x1] - I[y0 * W1 + x1] - I[y1 * W1 + x0] + I[y0 * W1 + x0]) / ((x1 - x0) * (y1 - y0));
+  }
+  function blur3(g) {                                  // box blur 3x3 terpisah (2 lintasan)
+    const W = g.w, H = g.h, t = new Uint16Array(W * H), out = new Uint8Array(W * H), d = g.d;
+    for (let y = 0; y < H; y++) { const o = y * W; t[o] = d[o] * 2 + d[o + 1]; for (let x = 1; x < W - 1; x++) t[o + x] = d[o + x - 1] + d[o + x] + d[o + x + 1]; t[o + W - 1] = d[o + W - 2] + d[o + W - 1] * 2; }
+    for (let x = 0; x < W; x++) {
+      out[x] = (t[x] * 2 + t[W + x]) / 9;
+      for (let y = 1; y < H - 1; y++) out[y * W + x] = (t[(y - 1) * W + x] + t[y * W + x] + t[(y + 1) * W + x]) / 9;
+      out[(H - 1) * W + x] = (t[(H - 2) * W + x] + t[(H - 1) * W + x] * 2) / 9;
+    }
+    return { w: W, h: H, d: out };
+  }
+  /** Tingkat kertas (P), tinta (I) & noise relatif — dasar kalibrasi otomatis untuk cahaya redup. */
+  function levels(g) {
+    const hist = new Uint32Array(256), d = g.d, n = d.length, step = 3;
+    let dsum = [], cnt = 0;
+    for (let i = 0; i < n; i += step) hist[d[i]]++;
+    const pct = p => { let t = 0, lim = (n / step) * p; for (let v = 0; v < 256; v++) { t += hist[v]; if (t >= lim) return v; } return 255; };
+    const P = pct(0.6), I = pct(0.015);
+    const diffs = new Uint32Array(256);                  // noise: median |g[x+1]-g[x]| (tepi hanya minoritas)
+    for (let y = 2; y < g.h - 2; y += 4) for (let x = 2; x < g.w - 3; x += 2) { diffs[Math.min(255, Math.abs(d[y * g.w + x + 1] - d[y * g.w + x]))]++; cnt++; }
+    let t = 0, med = 0; for (let v = 0; v < 256; v++) { t += diffs[v]; if (t >= cnt / 2) { med = v; break; } }
+    const C = Math.max(12, P - I);
+    return { P, I, C, noise: (med * 1.48 / 1.41) / C };
   }
   function binarize(g, r, k, minDiff) {                // gelap relatif terhadap sekitar
     const I = integral(g), W1 = g.w + 1, b = new Uint8Array(g.w * g.h);
@@ -119,15 +147,15 @@
   /** Cari 4 penanda pada citra abu-abu. Return {pts:[4 titik CW], score} atau null. */
   function findMarkers(g) {
     const r = Math.max(8, Math.round(Math.max(g.w, g.h) / 14));
-    const b = binarize(g, r, 0.72, 25);
+    const lv = levels(g), b = binarize(g, r, lv.C < 60 ? 0.8 : 0.72, Math.max(9, Math.min(25, 0.35 * lv.C)));   // ambang ikut kontras (redup)
     const maxSide = Math.max(g.w, g.h) * 0.09;
     const comps = components(b, g.w, g.h, maxSide * maxSide * 1.3);
     let c = comps.filter(o => {
       const side = Math.max(o.bw, o.bh), asp = o.bw / o.bh, fill = o.area / (o.bw * o.bh);
-      return side >= 5 && side <= maxSide && asp > 0.5 && asp < 2 && fill > 0.68;
+      return side >= 5 && side <= maxSide && asp > 0.5 && asp < 2 && fill > 0.58;
     }).sort((a, b) => b.area - a.area).slice(0, 14);
     if (c.length < 4) return null;
-    let best = null;
+    let best = null; const cand = [];
     const n = c.length;
     for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) for (let l = k + 1; l < n; l++) {
       const set = [c[i], c[j], c[k], c[l]];
@@ -145,8 +173,10 @@
       const area = quadArea(p);
       if (area < g.w * g.h * 0.08) continue;
       const score = area * Math.exp(-Math.pow((ratio - EXP_RATIO) / 0.13, 2)) * (1 - Math.min(0.6, Math.abs(Math.log(mrel / EXP_MREL)) / 2));
+      cand.push({ pts: p, score });
       if (!best || score > best.score) best = { pts: p, score };
     }
+    if (best) best.alts = cand.sort((a, b) => b.score - a.score).slice(1, 4);   // cadangan bila orientasi gagal
     return best;
   }
 
@@ -268,7 +298,7 @@
    * tidak pernah memenuhi syarat ini, sehingga X tebal/buram tidak terbaca sebagai coretan.
    * Return {bands:[{m,t}], th} — kelompok garis (pita) di posisi tengah kotak & tebalnya (px).
    */
-  function horizLines(B, W, bx, by, hs) {
+  function horizLines(B, W, bx, by, hs, tol) {
     const x0 = Math.round(bx - 0.78 * hs), x1 = Math.round(bx + 0.78 * hs), n = x1 - x0 + 1;
     const yA = Math.round(by - hs + 3), yB = Math.round(by + hs - 3);
     const ok = new Uint8Array(yB - yA + 1);
@@ -278,7 +308,7 @@
       for (let yc = yA; yc <= yB; yc++) {                // yc = posisi garis di kolom tengah
         if (ok[yc - yA]) continue;
         if (Math.abs(yc - by) + Math.abs(slope) * 0.78 * hs + 1 > hs - 3.5) continue;   // jangan menyentuh tepi kotak
-        let hit = 0, miss = 0, lim = Math.floor(n * 0.15);
+        let hit = 0, miss = 0, lim = Math.floor(n * (tol || 0.15));
         for (let x = x0; x <= x1; x++) {
           const y = Math.round(yc + (x - bx) * slope);
           if (y < 1 || y >= (B.length / W) - 1) { miss++; } else if (dk(x, y)) hit++; else miss++;
@@ -298,7 +328,13 @@
   function readWarped(gw, sensName) {
     const T = SENS[sensName] || SENS.sedang;
     if (gw.data) gw = toGray(gw);                        // terima RGBA (kompatibel) atau abu-abu
-    const B = binarize(gw, Math.round(4 * S), 0.86, 14);
+    // kalibrasi otomatis: makin gelap/berbintik → makin dihaluskan & ambang mengikuti kontras kertas–tinta
+    const lv = levels(gw);
+    if (lv.noise > 0.1 || lv.C < 30) return { dark: true, light: { P: lv.P, C: lv.C, noise: Math.round(lv.noise * 1000) / 1000 }, quality: 0, jawaban: '', detail: [], boxes: [] };
+    let gs = gw;
+    if (lv.noise > 0.035) gs = blur3(gs);
+    if (lv.noise > 0.09) gs = blur3(gs);
+    const B = binarize(gs, Math.round(4 * S), 0.86, Math.max(5, Math.min(14, 0.16 * lv.C)));
     const W = gw.w, half = LAYOUT.box * S / 2, hs = Math.round(half);
     const dark = (x, y) => (x >= 0 && y >= 0 && x < W && y < gw.h) ? B[y * W + x] : 0;
     const per = [];
@@ -352,24 +388,30 @@
     // 3) klasifikasi kotak & soal
     const answers = [], detail = [], boxes = [];
     for (let q = 1; q <= LAYOUT.questions; q++) {
-      const states = [], ratios = [];
+      const states = [], ratios = [], faint = [];
       for (let j = 0; j < 4; j++) {
         const c = cells[(q - 1) * 4 + j], ratio = c.ratio;
+        faint[j] = false;
         let st;
         if (ratio < T.empty) st = 'e';
         else {
-          const h = horizLines(B, W, c.x, c.y, half);
-          const bands = h.bands;
+          const h = horizLines(B, W, c.x, c.y, half, 0.15);
+          const bands = h.bands.filter(b => b.t >= 2);            // pita setebal 1 px = kebetulan derau
           const th = bands.reduce((m, b) => Math.max(m, b.t), 0);
           const nLines = bands.length >= 2 ? 2 : bands.length === 1 ? (th >= thrDouble ? 2 : 1) : 0;
           if (nLines >= 2) st = 'c';                    // dicoret (2 garis, termasuk yang menyatu)
           else if (nLines === 1) st = 'u';              // satu garis → tidak jelas
           else if (ratio > T.filled) st = 'u';          // dihitamkan penuh
           else if (ratio >= T.mark) st = 'm';
-          else st = 'u';                                // tipis/ragu
+          else { st = 'u'; faint[j] = true; }           // tipis/ragu
         }
         states.push(st); ratios.push(Math.round(ratio * 100) / 100);
         boxes.push({ q, j, x: c.x, y: c.y });
+      }
+      // tanda samar (bukan garis/arsir) di samping SATU tanda tegas yang ≥ 2,5× lebih pekat → anggap kosong
+      const strong = states.map((st, j) => st === 'm' ? ratios[j] : 0), top = Math.max.apply(null, strong);
+      if (top > 0 && states.filter(st => st === 'm').length === 1) {
+        states.forEach((st, j) => { if (st === 'u' && faint[j] && ratios[j] * 2.5 <= top) states[j] = 'e'; });
       }
       const marks = []; states.forEach((s, j) => { if (s === 'm') marks.push(j); });
       let a;
@@ -380,7 +422,7 @@
       answers.push(a);
       detail.push({ q, states: states.join(''), ratios });
     }
-    return { jawaban: answers.join(''), detail, boxes, quality: qSum / qN, half, pen: Math.round(tPen * 10) / 10 };
+    return { jawaban: answers.join(''), detail, boxes, quality: qSum / qN, half, pen: Math.round(tPen * 10) / 10, light: { P: lv.P, C: lv.C, noise: Math.round(lv.noise * 1000) / 1000 } };
   }
 
   /**
@@ -390,24 +432,62 @@
   function analyze(img, opts) {
     opts = opts || {};
     const gFull = toGray(img);
-    let pts0 = opts.pts, msPx;
-    if (!pts0) {
-      const ds = downscale(gFull, 900), found = findMarkers(ds.g);
-      if (!found) return { ok: false, reason: 'markers' };
-      pts0 = found.pts.map(p => ({ x: p.x * ds.f, y: p.y * ds.f, a: p.a * ds.f * ds.f }));
+    const ds = downscale(gFull, 900), lvS = levels(ds.g);
+    const minContrast = Math.max(10, Math.min(25, 0.3 * lvS.C));     // redup: kontras kertas–hitam lebih kecil
+    const sets = [];
+    if (opts.pts) sets.push(opts.pts);
+    const tryFind = () => {
+      const found = findMarkers(ds.g); if (!found) return;
+      [found].concat(found.alts || []).forEach(q => sets.push(q.pts.map(p => ({ x: p.x * ds.f, y: p.y * ds.f, a: p.a * ds.f * ds.f }))));
+    };
+    if (!opts.pts) tryFind();
+    if (!sets.length) return { ok: false, reason: 'markers' };
+    let pts = null, ori = null;
+    for (let i = 0; i < sets.length && !ori; i++) {
+      const pts0 = sets[i], msPx = Math.max(6, Math.sqrt(pts0.reduce((s, p) => s + (p.a || 64), 0) / 4));
+      const pp = pts0.map(p => refineMarker(gFull, p, msPx * 1.1));
+      const o = solveOrientation(gFull, pp);
+      if (o && o.contrast >= minContrast) { ori = o; pts = pp; }
+      else if (i === sets.length - 1 && opts.pts && sets.length === 1) tryFind();   // titik live meleset → cari ulang
     }
-    msPx = Math.max(6, Math.sqrt(pts0.reduce((s, p) => s + (p.a || 64), 0) / 4));
-    const pts = pts0.map(p => refineMarker(gFull, p, msPx * 1.1));
-    const ori = solveOrientation(gFull, pts);
-    if (!ori || ori.contrast < 25) {
-      if (opts.pts) return analyze(img, Object.assign({}, opts, { pts: null }));   // titik live meleset → cari ulang
-      return { ok: false, reason: 'orientation' };
-    }
+    if (!ori) return { ok: false, reason: 'orientation' };
     const gw = warpGray(gFull, ori.H);
     const res = readWarped(gw, opts.sens);
     const warped = { width: gw.w, height: gw.h, gray: gw.d };
+    if (res.dark) return { ok: false, reason: 'dark', light: res.light, warped };
     if (res.quality < 0.75) return { ok: false, reason: 'blur', quality: res.quality, warped };
     return Object.assign({ ok: true, warped, corners: pts }, res);
+  }
+
+  /** Kecerahan & ketajaman area kertas pada frame kecil (untuk memilih frame paling tajam & deteksi redup). */
+  function frameStats(g, pts) {
+    let x0 = g.w, y0 = g.h, x1 = 0, y1 = 0;
+    pts.forEach(p => { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); });
+    x0 = Math.max(1, x0 | 0); y0 = Math.max(1, y0 | 0); x1 = Math.min(g.w - 2, x1 | 0); y1 = Math.min(g.h - 2, y1 | 0);
+    let sum = 0, grad = 0, n = 0; const d = g.d, W = g.w;
+    for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) {
+      const i = y * W + x; sum += d[i]; grad += Math.abs(d[i + 1] - d[i - 1]) + Math.abs(d[i + W] - d[i - W]); n++;
+    }
+    return { lum: n ? sum / n : 0, sharp: n ? grad / n : 0 };
+  }
+  /**
+   * Gabungkan hasil beberapa frame (frame 1 = utama). Per soal:
+   * - frame 1 yakin & tidak dibantah frame lain → tetap;
+   * - frame 1 ragu ('*') → pakai jawaban yang disepakati ≥ 2 frame;
+   * - ada jawaban yakin yang saling bertentangan → '*' (perlu dicek).
+   */
+  function vote(results) {
+    const main = results[0], n = main.jawaban.length, out = [];
+    let fixed = 0;
+    for (let i = 0; i < n; i++) {
+      const a0 = main.jawaban[i], others = results.slice(1).map(r => r.jawaban[i]);
+      const sure = [a0].concat(others).filter(a => a !== '*');
+      if (a0 !== '*') { out.push(others.some(a => a !== '*' && a !== a0) ? '*' : a0); continue; }
+      const cnt = {}; sure.forEach(a => cnt[a] = (cnt[a] || 0) + 1);
+      const best = Object.keys(cnt).sort((x, y) => cnt[y] - cnt[x])[0];
+      if (best && cnt[best] >= 2 && Object.keys(cnt).length === 1) { out.push(best); fixed++; } else out.push('*');
+    }
+    return { jawaban: out.join(''), fixed };
   }
 
   /* ---------------- Penilaian (sama dengan server) ---------------- */
@@ -426,6 +506,6 @@
     return { benar, salah, kosong, ragu, skor: Math.round(skor * 100) / 100, nilai };
   }
 
-  root.OMR = { LAYOUT, S, OUT_W, OUT_H, SENS, boxCenter, toGray, downscale, findMarkers, homography, apply, warp, warpGray, grayToRGBA, readWarped, horizLines, analyze, score, refineMarker, solveOrientation };
+  root.OMR = { frameStats, vote, _dbg: g => { const lv = levels(g); let gs = g; if (lv.noise > 0.035) gs = blur3(gs); if (lv.noise > 0.09) gs = blur3(gs); return { lv, B: binarize(gs, Math.round(4 * S), 0.86, Math.max(5, Math.min(14, 0.16 * lv.C))) }; }, LAYOUT, S, OUT_W, OUT_H, SENS, boxCenter, toGray, downscale, findMarkers, homography, apply, warp, warpGray, grayToRGBA, readWarped, horizLines, analyze, score, refineMarker, solveOrientation };
   if (typeof module !== 'undefined') module.exports = root.OMR;
 })(typeof window !== 'undefined' ? window : globalThis);

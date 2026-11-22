@@ -36,7 +36,7 @@ const Beep = {
 const Scanner = {
   stream: null, track: null, video: null, ov: null, worker: null, running: false, paused: false,
   small: document.createElement('canvas'), full: document.createElement('canvas'),
-  hist: [], seq: 0, cbs: {}, waiting: {}, torchOn: false, lastErrAt: 0, needClear: false, clearN: 0,
+  hist: [], seq: 0, cbs: {}, waiting: {}, torchOn: false, lastErrAt: 0, needClear: false, clearN: 0, lumAvg: null, darkSince: 0, autoTorchTried: false,
   HOLD_MS: 500,                                       // kertas diam ±0,5 detik → ambil gambar
 
   initWorker() {
@@ -51,8 +51,9 @@ const Scanner = {
     const id = ++this.seq; msg.id = id;
     if (!this.worker) {                                     // cadangan: jalan di thread utama
       const img = { width: msg.w, height: msg.h, data: new Uint8ClampedArray(msg.buf) };
-      if (msg.type === 'detect') { const r = OMR.findMarkers(OMR.toGray(img)); return Promise.resolve({ pts: r ? r.pts : null }); }
+      if (msg.type === 'detect') { const g = OMR.toGray(img), r = OMR.findMarkers(g), st = r ? OMR.frameStats(g, r.pts) : { lum: 128, sharp: 0 }; return Promise.resolve({ pts: r ? r.pts : null, lum: st.lum, sharp: st.sharp }); }
       const r = OMR.analyze(img, { sens: msg.sens, pts: msg.pts || null });
+      if (r.warped && !r.ok) r.warped.gray = r.warped.gray || new Uint8ClampedArray(1);
       return Promise.resolve(Object.assign({}, r, r.warped ? { warped: { w: r.warped.width, h: r.warped.height, buf: r.warped.gray.buffer } } : {}));
     }
     return new Promise(res => { this.waiting[id] = res; this.worker.postMessage(msg, transfer); });
@@ -106,7 +107,8 @@ const Scanner = {
           this.draw(pts, 0); this.cbs.onState && this.cbs.onState('swap', 0);
           const dt0 = performance.now() - t0; await sleep(Math.max(16, 90 - dt0)); continue;
         }
-        this.hist.push({ t: now, pts }); this.hist = this.hist.filter(h => now - h.t < 1400);
+        this.hist.push({ t: now, pts, sharp: r.sharp || 0 }); this.hist = this.hist.filter(h => now - h.t < 2200);
+        this.watchLight(r.lum, now);
         const prog = this.stability(vw);
         this.draw(pts, prog);
         this.cbs.onState && this.cbs.onState(pts ? (prog >= 1 ? 'capture' : 'hold') : 'search', prog);
@@ -119,7 +121,23 @@ const Scanner = {
     const h = this.hist; if (!h.length || !h[h.length - 1].pts) return 0;
     let i = h.length - 1; const last = h[i].pts, tol = vw * 0.018;
     while (i > 0 && h[i - 1].pts && h[i - 1].pts.every((p, k) => Math.hypot(p.x - last[k].x, p.y - last[k].y) < tol)) i--;
-    return Math.min(1, (h[h.length - 1].t - h[i].t) / this.HOLD_MS);
+    const held = h[h.length - 1].t - h[i].t, prog = Math.min(1, held / this.HOLD_MS);
+    if (prog < 1) return prog;
+    // sudah stabil: tunggu frame yang setajam frame terbaik (fokus selesai), maksimal +0,7 dtk
+    const maxSharp = Math.max.apply(null, h.slice(i).map(x => x.sharp || 0)), cur = h[h.length - 1].sharp || 0;
+    return cur >= maxSharp * 0.9 || held > this.HOLD_MS + 700 ? 1 : 0.99;
+  },
+  /** Cahaya redup: beri tahu & nyalakan senter otomatis (sekali per sesi) bila tersedia. */
+  watchLight(lum, now) {
+    if (lum == null) return;
+    this.lumAvg = this.lumAvg == null ? lum : this.lumAvg * 0.8 + lum * 0.2;
+    if (this.lumAvg < 55) {
+      if (!this.darkSince) this.darkSince = now;
+      if (now - this.darkSince > 1200 && !this.torchOn && !this.autoTorchTried && this.hasTorch()) {
+        this.autoTorchTried = true;
+        this.torch(true).then(ok => { if (ok) { this.cbs.onTorch && this.cbs.onTorch(true); this.cbs.onInfo && this.cbs.onInfo('Cahaya redup — senter dinyalakan otomatis'); } });
+      } else if (now - this.darkSince > 1200 && !this.torchOn) this.cbs.onDark && this.cbs.onDark(true);
+    } else { this.darkSince = 0; this.cbs.onDark && this.cbs.onDark(false); }
   },
   draw(pts, prog) {
     const c = this.ov, dpr = window.devicePixelRatio || 1, cw = c.clientWidth, ch = c.clientHeight;
@@ -138,28 +156,47 @@ const Scanner = {
       g.beginPath(); g.arc(c0[0], c0[1], 28, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); g.lineWidth = 6; g.strokeStyle = '#fff'; g.stroke();
     }
   },
-  async capture() {
-    this.paused = true;
-    this.cbs.onBusy && this.cbs.onBusy(true);
+  grab(pts0) {
     const vw = this.video.videoWidth, vh = this.video.videoHeight, k = Math.min(1, 1600 / Math.max(vw, vh));
-    const last = this.hist.length && this.hist[this.hist.length - 1].pts;
-    const pts = last ? last.map(p => ({ x: p.x * k, y: p.y * k, a: p.a * k * k })) : null;   // pakai titik live
+    const pts = pts0 ? pts0.map(p => ({ x: p.x * k, y: p.y * k, a: p.a * k * k })) : null;
     const W = Math.round(vw * k), H = Math.round(vh * k);
     this.full.width = W; this.full.height = H;
     const cx = this.full.getContext('2d', { willReadFrequently: true });
     cx.drawImage(this.video, 0, 0, W, H);
     const img = cx.getImageData(0, 0, W, H);
+    return this.call({ type: 'analyze', w: W, h: H, buf: img.data.buffer, pts, sens: (AppState.boot && AppState.boot.settings.sensitivitas) || 'sedang' }, [img.data.buffer]);
+  },
+  async capture() {
+    this.paused = true;
+    this.cbs.onBusy && this.cbs.onBusy(true);
+    const last = this.hist.length && this.hist[this.hist.length - 1].pts;
     const t0 = performance.now();
-    const r = await this.call({ type: 'analyze', w: W, h: H, buf: img.data.buffer, pts, sens: (AppState.boot && AppState.boot.settings.sensitivitas) || 'sedang' }, [img.data.buffer]);
+    let r = await this.grab(last);
+    // ada jawaban ragu / gambar kurang mantap → baca 2 frame lagi & ambil suara terbanyak
+    if (r.ok && (r.jawaban.indexOf('*') > -1 || r.quality < 0.88)) {
+      this.cbs.onBusy && this.cbs.onBusy(true, 'Memastikan jawaban…');
+      const more = [];
+      for (let i = 0; i < 2 && this.running; i++) {
+        await new Promise(res => requestAnimationFrame(() => setTimeout(res, 40)));
+        const r2 = await this.grab(last);
+        if (r2.ok) more.push(r2);
+      }
+      if (more.length) {
+        const v = OMR.vote([r].concat(more));
+        r.jawaban = v.jawaban; r.frames = 1 + more.length; r.fixed = v.fixed;
+        r.detail = r.detail.map((d, i) => v.jawaban[i] === '*' ? d : Object.assign({}, d, { states: d.states }));
+      }
+    }
     r.ms = Math.round(performance.now() - t0);
-    if (r.warped) { const rgba = OMR.grayToRGBA({ w: r.warped.w, h: r.warped.h, d: new Uint8ClampedArray(r.warped.buf) }); r.warpedImg = new ImageData(rgba.data, rgba.width, rgba.height); }
+    if (r.warped && r.warped.buf && r.warped.buf.byteLength > 1) { const rgba = OMR.grayToRGBA({ w: r.warped.w, h: r.warped.h, d: new Uint8ClampedArray(r.warped.buf) }); r.warpedImg = new ImageData(rgba.data, rgba.width, rgba.height); }
     this.cbs.onBusy && this.cbs.onBusy(false);
     if (!this.running) return;
     if (r.ok) { this.cbs.onResult(r); }
     else {
-      const msg = r.reason === 'blur' ? 'Gambar kurang tajam. Tahan HP lebih stabil & pastikan terang.'
-        : r.reason === 'orientation' ? 'Penanda tidak lengkap. Pastikan 4 kotak hitam terlihat.'
-          : r.reason === 'markers' ? 'Penanda sudut tidak terbaca. Dekatkan & luruskan kertas.' : 'Gagal membaca: ' + (r.message || r.reason);
+      const msg = r.reason === 'dark' ? (this.hasTorch() ? 'Terlalu gelap. Ketuk ikon senter atau pindah ke tempat lebih terang.' : 'Terlalu gelap. Pindah ke tempat lebih terang / dekat jendela.')
+        : r.reason === 'blur' ? 'Gambar kurang tajam. Tahan HP lebih stabil & pastikan terang.'
+          : r.reason === 'orientation' ? 'Penanda tidak lengkap. Pastikan 4 kotak hitam terlihat.'
+            : r.reason === 'markers' ? 'Penanda sudut tidak terbaca. Dekatkan & luruskan kertas.' : 'Gagal membaca: ' + (r.message || r.reason);
       if (performance.now() - this.lastErrAt > 2500) Beep.play('err');
       this.lastErrAt = performance.now();
       this.cbs.onError && this.cbs.onError(msg);

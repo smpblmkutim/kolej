@@ -1,6 +1,6 @@
 # Panduan Instalasi Kolej — Koreksi Lembar Jawaban
 
-SMP Budi Luhur Mandiri · versi 1.2.0
+SMP Budi Luhur Mandiri · versi 1.3.0
 
 Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 
@@ -12,6 +12,23 @@ Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 Urutannya: **backend dulu** (untuk mendapat URL `/exec`), lalu isi URL itu ke frontend, lalu unggah frontend.
 
 ---
+
+## Yang baru di versi 1.3.0 — pembacaan lebih pintar & tahan cahaya redup
+
+| Peningkatan | Cara kerja |
+|---|---|
+| **Kalibrasi cahaya otomatis** | Tiap lembar diukur tingkat terang kertas, hitam tinta, dan bintik (noise). Makin redup → gambar dihaluskan & ambang tinta menyesuaikan kontras. |
+| **Pilih frame paling tajam** | Setelah kertas diam 0,5 dtk, aplikasi menunggu frame yang fokusnya paling tajam (maks. +0,7 dtk) sebelum membaca. |
+| **Voting 3 frame** | Bila ada soal ragu, 2 frame tambahan dibaca otomatis; jawaban yang disepakati dipakai ("dipastikan dari 3 frame"). Ragu sungguhan (mis. 2 X tanpa coretan) tetap ditandai. |
+| **Senter otomatis** | Bila kamera mendeteksi ruangan redup ±1 dtk, senter dinyalakan otomatis (sekali per sesi) dan ikon senter berkedip sebagai pengingat. |
+| **Tanda samar diabaikan** | Bekas hapusan/bintik tipis di samping satu X yang tegas tidak lagi membuat soal "perlu dicek". |
+| **Terlalu gelap ditolak dengan jelas** | Bila benar-benar terlalu gelap, aplikasi meminta nyalakan senter/pindah tempat — bukan menebak. |
+
+**Hasil uji memakai foto lembar asli dari lapangan** (50 soal, 4 soal berisi coretan): versi 1.1 → 3–4 soal perlu dicek; versi 1.3 → **50/50 benar, 0 perlu dicek**, juga pada versi foto yang digelapkan, berbintik, berlampu kuning, berbayangan, dan resolusi rendah. Diuji juga lewat kamera browser dengan foto asli & foto gelap sebagai video: keduanya **50/50, 0 perlu dicek**.
+
+**Memperbarui dari 1.2.x:** cukup ganti isi repo GitHub dengan ZIP baru (isi ulang `GAS_URL`) → `git push`. `Kode.gs` hanya berubah nomor versi (boleh ditempel ulang, tidak wajib). Di HP yang sudah memasang Kolej, ketuk **Muat ulang** saat muncul "Versi baru Kolej tersedia" — pastikan akun **Akun → Tentang** menunjukkan **v1.3.0**.
+
+**Tips scan di ruangan redup:** biarkan senter menyala, pegang HP ±25–35 cm di atas kertas, tunggu bunyi beep (jangan digerakkan). Bayangan tangan/HP di atas kertas tidak masalah selama 4 kotak hitam terlihat.
 
 ## Yang baru di versi 1.2.0
 

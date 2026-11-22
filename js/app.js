@@ -681,7 +681,7 @@ async function openScanner(sesi, nisn, skipConfirm) {
       <button class="rbtn" id="st" aria-label="Senter">${ic('flashlight')}</button><button class="rbtn" id="ss" aria-label="Suara">${ic(Store.get('sound', true) ? 'volume-2' : 'volume-x')}</button></div>
     <div class="guide" id="sg"><i></i><i></i><i></i><i></i></div>
     <div class="sc-toast" id="sm"><i class="dot"></i><span>Membuka kamera…</span></div>
-    <div class="sc-busy" id="sb" hidden><div style="text-align:center"><div class="spin" style="margin:0 auto 12px"></div><b>Membaca jawaban…</b></div></div>
+    <div class="sc-busy" id="sb" hidden><div style="text-align:center"><div class="spin" style="margin:0 auto 12px"></div><b id="sbt-t">Membaca jawaban…</b></div></div>
     <div class="sc-bottom" id="sbt"></div>`;
   document.body.appendChild(wrap); document.body.style.overflow = 'hidden';
   SC = { sesi, nisn, wrap, kelas: c.kelas };
@@ -713,8 +713,11 @@ async function openScanner(sesi, nisn, skipConfirm) {
         else if (st === 'hold') msg('Terdeteksi, tahan sebentar…', 'live');
         else msg('Mengambil gambar…', 'live');
       },
-      onBusy: b => { $('#sb', wrap).hidden = !b; },
+      onBusy: (b, t) => { $('#sb', wrap).hidden = !b; $('#sbt-t', wrap).textContent = t || 'Membaca jawaban…'; },
       onError: m => msg(m, 'err'),
+      onInfo: m => { msg(m, 'live'); toast(m, 'info', 2500); },
+      onTorch: on => $('#st', wrap).classList.toggle('on', on),
+      onDark: d => { $('#st', wrap).classList.toggle('pulse', d); if (d && !SC.darkHint) { SC.darkHint = 1; toast('Cahaya redup — ketuk ikon senter agar hasil lebih akurat.', 'warn', 3500); } },
       onResult: r => onScanResult(r)
     });
     if (!Scanner.hasTorch()) $('#st', wrap).style.opacity = .45;
@@ -794,7 +797,7 @@ function showScanResult(R) {
     const img = canvas.toDataURL('image/jpeg', 0.8);
     fp.innerHTML = `<header class="topbar"><button class="btn-icon" id="rb-back" aria-label="Kembali">${ic('arrow-left')}</button><div class="grow"><div class="t1">Hasil Pemeriksaan</div><div class="t2">${esc(AppState.boot.settings.nama_sekolah)}</div></div></header>
     <div class="content" style="max-width:640px">
-      <div class="info ${ragu.length ? 'warn' : 'ok'}" style="font-size:14px">${ic(ragu.length ? 'triangle-alert' : 'circle-check')}<div class="grow"><b style="font:700 16px var(--font-h)">${ragu.length ? 'Scan berhasil, ada yang perlu dicek' : 'Scan berhasil, hasil tersimpan'}</b><br><span class="muted">Dibaca otomatis dalam ${fmt.num((R.res.ms || 0) / 1000, 1)} detik</span></div><span class="chip ${R.status === 'Dikoreksi manual' ? 'p' : 'a'}">${R.status === 'Dikoreksi manual' ? 'Manual' : 'Otomatis'}</span></div>
+      <div class="info ${ragu.length ? 'warn' : 'ok'}" style="font-size:14px">${ic(ragu.length ? 'triangle-alert' : 'circle-check')}<div class="grow"><b style="font:700 16px var(--font-h)">${ragu.length ? 'Scan berhasil, ada yang perlu dicek' : 'Scan berhasil, hasil tersimpan'}</b><br><span class="muted">Dibaca otomatis dalam ${fmt.num((R.res.ms || 0) / 1000, 1)} detik${R.res.frames > 1 ? ' · dipastikan dari ' + R.res.frames + ' frame' + (R.res.fixed ? ' (' + R.res.fixed + ' soal terkoreksi)' : '') : ''}</span></div><span class="chip ${R.status === 'Dikoreksi manual' ? 'p' : 'a'}">${R.status === 'Dikoreksi manual' ? 'Manual' : 'Otomatis'}</span></div>
       <div class="card" style="margin-top:12px"><div class="row" style="gap:14px"><span class="avatar" style="width:56px;height:56px;font-size:18px">${esc(fmt.initials(s.nama))}</span>
         <div class="grow"><h2 class="ellip">${esc(s.nama)}</h2><div class="muted small mono">NISN ${esc(s.nisn)} · ${esc(mapelNama(sesi.mapel))}</div>
         <div class="row" style="gap:6px;margin-top:6px"><span class="chip">Kelas ${esc(kelasNama(sesi.kelas))}</span><span class="chip out">${ic('history')} ${fmt.time(new Date())}</span></div></div></div></div>

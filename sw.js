@@ -4,7 +4,7 @@
    • API Google Apps Script & POST tidak pernah di-cache → data selalu ke server
    • Update berversi: naikkan VERSION dengan  python3 tools/bump_version.py . 1.0.2
    ========================================================================== */
-const VERSION = 'kolej-v1.2.0';          // ← NAIKKAN setiap kali file frontend berubah
+const VERSION = 'kolej-v1.3.0';          // ← NAIKKAN setiap kali file frontend berubah
 const SPA = true;                        // routing pakai #/halaman
 const OFFLINE_PAGE = 'offline.html';
 
@@ -13,17 +13,17 @@ const SHELL = [
   'index.html',
   'manifest.webmanifest',
   'offline.html',
-  'pwa.js?v=1.2.0',
-  'css/style.css?v=1.2.0',
-  'js/config.js?v=1.2.0',
-  'js/icons.js?v=1.2.0',
-  'js/core.js?v=1.2.0',
-  'js/omr.js?v=1.2.0',
-  'js/scanner.js?v=1.2.0',
-  'js/app.js?v=1.2.0',
-  'js/template.js?v=1.2.0',
-  'js/admin.js?v=1.2.0',
-  'js/scan-worker.js?v=1.2.0',
+  'pwa.js?v=1.3.0',
+  'css/style.css?v=1.3.0',
+  'js/config.js?v=1.3.0',
+  'js/icons.js?v=1.3.0',
+  'js/core.js?v=1.3.0',
+  'js/omr.js?v=1.3.0',
+  'js/scanner.js?v=1.3.0',
+  'js/app.js?v=1.3.0',
+  'js/template.js?v=1.3.0',
+  'js/admin.js?v=1.3.0',
+  'js/scan-worker.js?v=1.3.0',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/maskable-512.png',
