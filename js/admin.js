@@ -54,13 +54,14 @@ registerPage('guru', {
         <div class="toolbar"><div class="input-wrap">${ic('search')}<input class="input" id="u-q" placeholder="Cari nama atau username…" value="${esc(q)}"></div></div>
         <div class="chips" style="margin-bottom:12px">${[['', 'Semua'], ['Guru', 'Guru'], ['Admin', 'Admin']].map(([v, t]) => `<button class="chip pick ${peran === v ? 'on' : ''}" data-p="${v}">${t}</button>`).join('')}</div>
         <div class="list">${users.map(u => `<div class="li" style="cursor:default"><span class="avatar sm" style="${u.status === 'Aktif' ? '' : 'background:var(--surface-3);color:var(--muted)'}">${esc(fmt.initials(u.nama))}</span>
-          <div class="grow"><div class="nm ellip">${esc(u.nama)}</div><div class="sub">${esc(u.peran)}${u.username ? ' · @' + esc(u.username) : ''}${u.wajibGanti ? ' · <span style="color:var(--warn-ink)">belum ganti password</span>' : ''}</div></div>
+          <div class="grow"><div class="nm ellip">${esc(u.nama)}</div><div class="sub">${esc(u.peran)}${u.username ? ' · @' + esc(u.username) : ''}${u.wajibGanti ? ' · <span style="color:var(--warn-ink)">belum ganti password</span>' : ''}</div>${u.peran === 'Guru' ? ajarSummary(u.id) : ''}</div>
           <span class="hide-mob">${statusChip(u.status)}</span>
-          <button class="btn-icon" data-r="${esc(u.id)}" aria-label="Reset password" title="Reset password">${ic('key-round')}</button><button class="btn-icon" data-e="${esc(u.id)}" aria-label="Ubah">${ic('pencil')}</button></div>`).join('') || `<div class="empty">${ic('users')}<p>Tidak ada pengguna.</p></div>`}</div>`;
+          ${u.peran === 'Guru' ? `<button class="btn btn-soft btn-sm" data-a="${esc(u.id)}" title="Atur mapel & kelas yang diajar">${ic('book-open', 'sm')} <span class="hide-mob">Mengajar</span></button>` : ''}<button class="btn-icon" data-r="${esc(u.id)}" aria-label="Reset password" title="Reset password">${ic('key-round')}</button><button class="btn-icon" data-e="${esc(u.id)}" aria-label="Ubah">${ic('pencil')}</button></div>`).join('') || `<div class="empty">${ic('users')}<p>Tidak ada pengguna.</p></div>`}</div>`;
       $('#u-q', el).oninput = e => { q = e.target.value.toLowerCase(); const p = e.target.selectionStart; draw(); const i = $('#u-q', el); i.focus(); i.setSelectionRange(p, p); };
       $$('[data-p]', el).forEach(b => b.onclick = () => { peran = b.dataset.p; draw(); });
       $('#u-add', el).onclick = () => edit(null);
       $$('[data-e]', el).forEach(b => b.onclick = () => edit(AppState.boot.users.find(u => u.id === b.dataset.e)));
+      $$('[data-a]', el).forEach(b => b.onclick = () => ajarSheet(AppState.boot.users.find(u => u.id === b.dataset.a), draw));
       $$('[data-r]', el).forEach(b => b.onclick = () => reset(AppState.boot.users.find(u => u.id === b.dataset.r)));
     };
     const edit = u => {
@@ -73,6 +74,7 @@ registerPage('guru', {
           const res = await api('userSave', Object.assign({ id: u && u.id }, fd));
           if (!res.success) return res.message;
           await adminRefresh(); L.close(); toast(res.message); draw();
+          if (!u && fd.peran !== 'Admin') { const nu = AppState.boot.users.find(x => x.id === res.data.id); if (nu) ajarSheet(nu, draw); }
         }, u && u.id !== AppState.me.id ? {
           delLabel: 'Hapus pengguna',
           onDelete: async () => {
@@ -92,6 +94,38 @@ registerPage('guru', {
     draw();
   }
 });
+
+/* ---------------- Penugasan mengajar (guru × mapel × kelas) ---------------- */
+function ajarSummary(gid) {
+  const list = AppState.maps.pengajar[gid] || [];
+  if (!list.length) return `<div class="small" style="color:var(--warn-ink);margin-top:2px">${ic('triangle-alert', 'sm')} Belum ditugaskan mengajar</div>`;
+  const by = {}; list.forEach(([m, k]) => (by[m] = by[m] || []).push(kelasNama(k)));
+  return `<div class="row" style="gap:4px;flex-wrap:wrap;margin-top:4px">${Object.keys(by).sort((a, b) => mapelNama(a).localeCompare(mapelNama(b))).map(m => `<span class="chip a" style="height:24px">${esc(mapelNama(m))}: ${esc(by[m].sort((a, b) => a.localeCompare(b, 'id', { numeric: true })).join(', '))}</span>`).join('')}</div>`;
+}
+/** Admin memilih mapel & kelas yang diajar guru. Guru hanya bisa memakai kombinasi ini. */
+function ajarSheet(u, onDone) {
+  const sel = new Set((AppState.maps.pengajar[u.id] || []).map(([m, k]) => m + '|' + k));
+  const L = openLayer(`<div class="sh-h"><div class="grow"><h2>Tugas Mengajar</h2><p class="muted small">${esc(u.nama)} · ketuk kelas untuk tiap mapel yang diajar</p></div><button class="btn-icon" data-close>${ic('x')}</button></div>
+    <div id="aj-b"></div><div class="sticky-act" style="bottom:0"><button class="btn btn-primary btn-block" id="aj-save">${ic('save')} <span>Simpan Tugas Mengajar</span></button></div>`, { wide: true });
+  const draw = () => {
+    const kel = activeKelas();
+    $('#aj-b', L.el).innerHTML = activeMapel().map(m => {
+      const n = kel.filter(k => sel.has(m.id + '|' + k.id)).length;
+      return `<div class="card" style="padding:12px;${n ? 'border-color:var(--primary-line);background:var(--primary-soft)' : ''}"><div class="row between" style="margin-bottom:8px"><b style="font:700 15px var(--font-h)">${esc(m.nama)} ${n ? `<span class="chip p" style="height:22px">${n} kelas</span>` : ''}</b>
+        <div class="row" style="gap:4px"><button class="btn btn-ghost btn-sm" data-all="${esc(m.id)}">Semua</button><button class="btn btn-ghost btn-sm" data-none="${esc(m.id)}">Kosongkan</button></div></div>
+        <div class="chips" style="flex-wrap:wrap">${kel.map(k => `<button class="chip pick ${sel.has(m.id + '|' + k.id) ? 'on' : ''}" data-mk="${esc(m.id + '|' + k.id)}">${esc(k.nama)}</button>`).join('')}</div></div>`;
+    }).join('') || '<p class="muted">Belum ada mapel/kelas aktif.</p>';
+    $$('[data-mk]', L.el).forEach(b => b.onclick = () => { sel.has(b.dataset.mk) ? sel.delete(b.dataset.mk) : sel.add(b.dataset.mk); draw(); });
+    $$('[data-all]', L.el).forEach(b => b.onclick = () => { kel.forEach(k => sel.add(b.dataset.all + '|' + k.id)); draw(); });
+    $$('[data-none]', L.el).forEach(b => b.onclick = () => { kel.forEach(k => sel.delete(b.dataset.none + '|' + k.id)); draw(); });
+  };
+  $('#aj-save', L.el).onclick = e => withBtn(e.currentTarget, async () => {
+    const res = await api('pengajarSave', { guru: u.id, pairs: [...sel].map(x => x.split('|')) });
+    if (!res.success) return toast(res.message, 'bad');
+    await adminRefresh(); L.close(); toast(res.message); onDone && onDone();
+  });
+  draw();
+}
 
 /* ---------------- Mapel & Kelas (pola sama) ---------------- */
 function masterPage(kind) {

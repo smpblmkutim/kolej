@@ -1,6 +1,6 @@
 # Panduan Instalasi Kolej — Koreksi Lembar Jawaban
 
-SMP Budi Luhur Mandiri · versi 1.1.0
+SMP Budi Luhur Mandiri · versi 1.2.0
 
 Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 
@@ -12,6 +12,19 @@ Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 Urutannya: **backend dulu** (untuk mendapat URL `/exec`), lalu isi URL itu ke frontend, lalu unggah frontend.
 
 ---
+
+## Yang baru di versi 1.2.0
+
+| Fitur | Keterangan |
+|---|---|
+| **Tugas mengajar ditentukan admin** | Data Guru → tombol **Mengajar** → pilih kelas untuk tiap mapel. Guru hanya bisa memilih, mengisi kunci, memindai, dan melihat hasil untuk mapel × kelas tugasnya. |
+| **Kunci jawaban bersama admin & guru** | Satu kunci untuk tiap *ujian + mapel + kelas*. Kunci yang diisi admin langsung muncul di akun guru (dan sebaliknya). Halaman kunci menampilkan "terakhir diubah oleh …". |
+| **Deteksi 2–3 coretan sekaligus** | Pembaca coretan baru (pencarian garis lurus): coretan "=" yang miring, berdekatan, atau menumpuk dengan X tetap dikenali di 2–3 kotak dalam satu soal. Uji dengan tulisan tangan dari foto lapangan: **34,8% → 100%** soal terbaca benar. |
+| **Scan lebih cepat** | Gambar diambil setelah kertas diam **0,5 detik** (sebelumnya 0,9), titik penanda dari kamera langsung dipakai ulang, pelurusan gambar abu-abu. Pembacaan **±4× lebih cepat**; uji browser: kamera siap → hasil tampil **1,3 → 0,8 detik**. |
+
+**Memperbarui dari 1.1.x:** tempel `Kode.gs` baru → Simpan → jalankan **`setupKolej`** (membuat sheet **Pengajar**, data lain tidak diubah) → *Terapkan → Kelola deployment → ✏️ Edit → Versi baru*. Lalu ganti isi repo GitHub dengan ZIP baru (isi ulang `GAS_URL`) dan `git push`.
+
+⚠️ **Wajib setelah update:** Admin buka **Data Guru → Mengajar** dan tetapkan mapel & kelas setiap guru. Guru yang belum ditugaskan akan melihat pesan *"Belum ada tugas mengajar"*. Bila dari versi lama ada beberapa kunci untuk mapel & kelas yang sama, yang dipakai adalah kunci yang **terakhir diubah**.
 
 ## Yang baru di versi 1.1.0
 
@@ -125,7 +138,7 @@ Panduan singkat untuk dibagikan ke guru (WhatsApp/PDF): **`PANDUAN-PASANG-APLIKA
 1. **Pengaturan** → isi nama sekolah, **ujian aktif** (mis. *PAS Genap 2025/2026*), KKM, warna tema → **Simpan**.
 2. **Data Mapel** dan **Data Kelas** → sesuaikan (data contoh boleh dinonaktifkan).
 3. **Data Mapel** → atur **KKM** tiap mapel (kosong = KKM bawaan dari Pengaturan).
-4. **Data Guru** → **Tambah** setiap guru + password awal. Berikan password itu ke guru; mereka wajib menggantinya saat login pertama. Nonaktifkan 2 guru contoh.
+4. **Data Guru** → **Tambah** (setelah disimpan, langsung muncul lembar **Tugas Mengajar**: ketuk kelas untuk tiap mapel yang diajar guru itu) setiap guru + password awal. Berikan password itu ke guru; mereka wajib menggantinya saat login pertama. Nonaktifkan 2 guru contoh.
 5. **Data Siswa** → **Unduh Template** → isi di Excel (kolom NISN sudah berformat teks) → **Impor Excel** → periksa pratinjau (baris merah = perlu diperbaiki) → **Simpan Data Valid**.
 
 ### C3. Cetak lembar jawaban
@@ -147,8 +160,8 @@ Buka menu **Template LJK** (sidebar laptop, menu Data untuk admin di HP, atau Ak
 
 ### C4. Alur Guru
 1. Login: pilih nama → password → (login pertama: ganti password).
-2. **Pilih Mapel & Kelas.**
-3. **Kunci:** atur **KKM** mapel bila perlu, lalu ketuk A–D tiap soal, atau ⋮ → **Tempel teks kunci** (mis. `ABCDABCD…`). Atur jumlah soal (1–50) dan mode skor (Bagi Rata / Atur Manual) → **Simpan Kunci**.
+2. **Pilih Mapel & Kelas** — hanya yang ditugaskan admin.
+3. **Kunci:** bila admin sudah mengisi, kunci langsung siap (bisa langsung scan). Bila belum, atur **KKM** mapel bila perlu, lalu ketuk A–D tiap soal, atau ⋮ → **Tempel teks kunci** (mis. `ABCDABCD…`). Atur jumlah soal (1–50) dan mode skor (Bagi Rata / Atur Manual) → **Simpan Kunci**.
    Bisa juga **Salin Kelas Lain** untuk mapel yang sama.
 4. Ganti mapel/kelas kapan saja lewat tombol biru **Ganti** di kartu atas.
 5. **Scan:** ketuk **Mulai Scan** (izinkan kamera) → arahkan ke lembar, keempat kotak hitam masuk layar → tahan diam ±1 detik → **beep** → nilai & tanda hijau/merah muncul.
@@ -221,6 +234,9 @@ Di editor Apps Script, jalankan **`cekPerforma`** untuk melihat ukuran penyimpan
 | Setelah update tampilan masih lama | Versi belum dinaikkan | Jalankan `tools/bump_version.py`, push ulang; di HP tutup-buka aplikasi |
 | "Sesi berakhir" | Token 6 jam habis | Masukkan password lagi; hasil di antrean HP tidak hilang |
 | "Tidak bisa dihapus" | Data masih dipakai (mis. mapel sudah punya kunci, kelas masih berisi siswa) | Pilih **Nonaktifkan saja** agar riwayat nilai tetap utuh, atau hapus data terkaitnya dulu |
+| Guru melihat "Belum ada tugas mengajar" | Admin belum menetapkan mapel & kelasnya | Admin → Data Guru → **Mengajar** |
+| Guru tidak bisa mengisi kunci mapel tertentu | Mapel × kelas itu bukan tugasnya | Admin menambah tugas mengajar, atau admin mengisi kuncinya |
+| Banyak "Perlu dicek" pada soal yang dicoret | Coretan hanya 1 garis, sangat miring, atau terlalu pendek | Minta siswa mencoret dengan **2 garis mendatar (=) melintasi kotak**; cek di layar Tinjau |
 | Guru lupa password | — | Admin → Data Guru → ikon 🔑 Reset password |
 | Akun dikunci 15 menit | 5 kali salah password | Tunggu 15 menit atau Admin reset password |
 

@@ -20,6 +20,8 @@ function buildMaps() {
   });
   Object.values(m.siswaByKelas).forEach(a => a.sort((p, q) => p.nama.localeCompare(q.nama)));
   b.hasilIdx.forEach(([id, s, n, nilai, st]) => { (m.hasil[s] = m.hasil[s] || {})[n] = { id, nilai, status: st }; });
+  m.ajar = new Set((b.ajar || []).map(a => a[0] + '|' + a[1]));            // penugasan guru (dari admin)
+  m.pengajar = {}; (b.pengajar || []).forEach(([g, mp, k]) => { (m.pengajar[g] = m.pengajar[g] || []).push([mp, k]); });
   (AppState.pending || []).forEach(it => {                // hasil yang masih di antrean tetap tampil
     if (it.action !== 'hasilSave' || !it.data.local) return;
     (m.hasil[it.data.idSesi] = m.hasil[it.data.idSesi] || {})[it.data.nisn] = { id: it.data.idScan, nilai: it.data.local.nilai, status: it.data.status || it.data.local.status, pending: true };
@@ -33,10 +35,16 @@ function kkmOf(mapel) { const m = AppState.maps.mapel.get(mapel); return m && m.
 const kelasNama = id => (AppState.maps.kelas.get(id) || {}).nama || id;
 function activeMapel() { return [...AppState.maps.mapel.values()].filter(x => x.status === 'Aktif').sort((a, b) => a.nama.localeCompare(b.nama)); }
 function activeKelas() { return [...AppState.maps.kelas.values()].filter(x => x.status === 'Aktif').sort((a, b) => a.nama.localeCompare(b.nama, 'id', { numeric: true })); }
+/** Mapel & kelas yang boleh dipakai: admin = semua; guru = sesuai penugasan admin. */
+function canTeach(mapel, kelas) { return isAdmin() || AppState.maps.ajar.has(mapel + '|' + kelas); }
+function myMapel() { return isAdmin() ? activeMapel() : activeMapel().filter(m => [...AppState.maps.ajar].some(k => k.split('|')[0] === m.id)); }
+function myKelas(mapel) { return isAdmin() ? activeKelas() : activeKelas().filter(k => mapel ? canTeach(mapel, k.id) : [...AppState.maps.ajar].some(x => x.split('|')[1] === k.id)); }
+const NO_AJAR = `<div class="card empty">${'<svg class="i" viewBox="0 0 24 24"></svg>'}<h3>Belum ada tugas mengajar</h3><p>Admin belum menetapkan mapel & kelas yang Anda ajar. Hubungi admin/kurikulum agar Anda ditugaskan.</p></div>`;
+/** Kunci bersama per ujian+mapel+kelas (diisi admin atau guru) — ambil yang terakhir diubah. */
 function sesiFor(mapel, kelas, ujian) {
   ujian = ujian || ujianAktif();
   const list = (AppState.boot.sesi || []).filter(s => s.ujian === ujian && s.mapel === mapel && s.kelas === kelas);
-  return list.find(s => s.guru === AppState.me.id) || (isAdmin() ? list[0] : null) || null;
+  return list.sort((a, b) => String(b.diubah || '').localeCompare(String(a.diubah || '')))[0] || null;
 }
 function curSesi() { const c = AppState.ctx; return c ? sesiFor(c.mapel, c.kelas) : null; }
 function kunciLengkap(s) { return s && s.kunci && s.kunci.length === s.n && /^[ABCD]+$/.test(s.kunci); }
@@ -293,6 +301,20 @@ function startApp() {
   }, { fresh: 60000 });
   (window.requestIdleCallback ? cb => requestIdleCallback(cb, { timeout: 2500 }) : cb => setTimeout(cb, 2500))(() => prefetchHasil());
 }
+/** Segarkan data (kunci dari admin/guru lain, penugasan) bila sudah > ms; render ulang hanya bila berubah. */
+let _bootBusy = false;
+function refreshBoot(ms) {
+  const c = Store.get(userKey('boot'), null);
+  if (_bootBusy || (c && Date.now() - c.t < ms)) return;
+  _bootBusy = true;
+  const before = JSON.stringify([AppState.boot.sesi, AppState.boot.ajar, AppState.boot.mapel]);
+  api('boot').then(res => {
+    _bootBusy = false;
+    if (!res.success) return;
+    AppState.boot = res.data; Store.set(userKey('boot'), { t: Date.now(), h: '', data: res.data }); buildMaps();
+    if (JSON.stringify([res.data.sesi, res.data.ajar, res.data.mapel]) !== before && !$('.scanner') && !$('.fullpage') && !$('.layer')) route(true);
+  });
+}
 function prefetchHasil() {
   const u = ujianAktif(), k = userKey('hasil:' + u), c = Store.get(k, null);
   if (c && Date.now() - c.t < 120000) return;
@@ -306,7 +328,9 @@ function route(soft) {
   if (!def || (def.admin && !isAdmin())) { location.hash = isAdmin() ? '#/dashboard' : '#/scan'; return; }
   const view = $('#view'); if (!view) return;
   if (name !== 'pengaturan') applyBrand(AppState.boot.settings.warna_utama, AppState.boot.settings.warna_aksen);
+  if (AppState.ctx && !canTeach(AppState.ctx.mapel, AppState.ctx.kelas)) { AppState.ctx = null; Store.del(userKey('ctx')); }
   if (def.needCtx && !AppState.ctx) { location.hash = '#/pilih'; return; }
+  if (['kunci', 'scan', 'pilih', 'hasil', 'dashboard'].includes(name)) refreshBoot(15000);
   $$('.sidebar a[data-r], .bottomnav a[data-r]').forEach(a => {
     const r = a.dataset.r, on = r === name || (name === 'pilih' && r === 'scan') || (['guru', 'mapel', 'kelas', 'siswa', 'pengaturan', 'log'].includes(name) && r === 'data') || (name === 'template' && r === (isAdmin() ? 'data' : 'akun'));
     a.classList.toggle('on', on);
@@ -361,14 +385,14 @@ function ctxHeader(extra) {
 function bindCtx(el) { $$('[data-ctx-switch]', el).forEach(b => b.onclick = () => quickSwitch()); }
 /** Ganti mapel/kelas cepat lewat lembar bawah (tanpa pindah halaman). */
 function quickSwitch() {
-  const c = AppState.ctx || {}, mp = activeMapel();
-  let mapel = c.mapel && AppState.maps.mapel.get(c.mapel) ? c.mapel : (mp[0] && mp[0].id);
+  const c = AppState.ctx || {}, mp = myMapel();
+  let mapel = c.mapel && mp.some(m => m.id === c.mapel) ? c.mapel : (mp[0] && mp[0].id);
   const L = openLayer(`<div class="sh-h"><div class="grow"><h2>Ganti Mapel & Kelas</h2><p class="muted small">${esc(ujianAktif())}</p></div><button class="btn-icon" data-close>${ic('x')}</button></div><div id="qs"></div>`);
   const draw = () => {
     $('#qs', L.el).innerHTML = `<div class="label-sm" style="margin-bottom:8px">Mata Pelajaran</div>
       <div class="chips" style="flex-wrap:wrap;margin-bottom:16px">${mp.map(m => `<button class="chip pick ${m.id === mapel ? 'on' : ''}" data-m="${esc(m.id)}">${esc(m.nama)}</button>`).join('')}</div>
       <div class="label-sm" style="margin-bottom:8px">Kelas</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">${activeKelas().map(k => {
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">${myKelas(mapel).map(k => {
         const se = sesiFor(mapel, k.id), p = progressOf(se, k.id), on = c.mapel === mapel && c.kelas === k.id;
         return `<button class="card" data-k="${esc(k.id)}" style="margin:0;padding:12px;text-align:left;cursor:pointer;${on ? 'border-color:var(--primary);box-shadow:0 0 0 2px var(--primary)' : ''}"><div class="row between"><b style="font:700 16px var(--font-h)">${esc(k.nama)}</b>${on ? '<span class="chip p" style="height:22px">Aktif</span>' : ''}</div>
           <div class="small" style="margin:4px 0 6px;color:${kunciLengkap(se) ? 'var(--ok-ink)' : 'var(--warn-ink)'}">${kunciLengkap(se) ? 'kunci siap' : 'kunci belum'}</div><div class="progress ${p.pct === 100 ? 'ok' : ''}"><i style="width:${p.pct}%"></i></div><div class="small muted tnum" style="margin-top:4px">${p.done}/${p.total}</div></button>`;
@@ -391,11 +415,12 @@ function quickSwitch() {
 registerPage('pilih', {
   title: 'Pilih Mapel & Kelas',
   render(el) {
-    const c = AppState.ctx || {}, mp = activeMapel();
-    let mapel = c.mapel && AppState.maps.mapel.get(c.mapel) ? c.mapel : (mp[0] && mp[0].id);
+    const c = AppState.ctx || {}, mp = myMapel();
+    let mapel = c.mapel && mp.some(m => m.id === c.mapel) ? c.mapel : (mp[0] && mp[0].id);
+    if (!mp.length) { el.innerHTML = `<div class="page-h"><h1>Pilih Mapel & Kelas</h1></div>` + NO_AJAR.replace('<svg class="i" viewBox="0 0 24 24"></svg>', ic('book-open')); return; }
     const draw = () => {
-      const kel = activeKelas(), tingkat = [...new Set(kel.map(k => k.tingkat || '-'))];
-      el.innerHTML = `<div class="page-h"><div><h1>Pilih Mapel & Kelas</h1><p class="muted">${esc(ujianAktif())} · pilih mata pelajaran lalu kelas yang akan dikoreksi</p></div></div>
+      const kel = myKelas(mapel), tingkat = [...new Set(kel.map(k => k.tingkat || '-'))];
+      el.innerHTML = `<div class="page-h"><div><h1>Pilih Mapel & Kelas</h1><p class="muted">${esc(ujianAktif())} · ${isAdmin() ? 'pilih mata pelajaran lalu kelas' : 'mapel & kelas sesuai tugas mengajar dari admin'}</p></div></div>
       <div class="label-sm" style="margin:6px 0 8px">Mata Pelajaran</div>
       <div class="chips" style="flex-wrap:wrap">${mp.map(m => `<button class="chip pick ${m.id === mapel ? 'on' : ''}" data-m="${esc(m.id)}">${esc(m.nama)}</button>`).join('') || '<p class="muted">Belum ada mapel. Minta admin menambahkan data mapel.</p>'}</div>
       <div class="label-sm" style="margin:20px 0 8px">Kelas</div>
@@ -426,10 +451,14 @@ registerPage('kunci', {
     const c = AppState.ctx, sesi = sesiFor(c.mapel, c.kelas);
     const dkey = userKey('draft:' + c.mapel + ':' + c.kelas);
     const base = sesi ? { n: sesi.n, kunci: sesi.kunci.split(''), mode: sesi.mode, bobot: sesi.bobot ? sesi.bobot.split(',') : [] } : { n: 50, kunci: [], mode: 'Rata', bobot: [] };
-    let D = Store.get(dkey, null) || JSON.parse(JSON.stringify(base));
+    // draf lokal dibuang bila kunci di server sudah diubah orang lain (admin/guru) sejak draf dibuat
+    const stamp = sesi ? String(sesi.diubah || '') + '|' + sesi.kunci : '';
+    let D = Store.get(dkey, null);
+    if (D && sesi && D.base !== stamp) { D = null; Store.del(dkey); }
+    if (!D) D = Object.assign(JSON.parse(JSON.stringify(base)), { base: stamp });
     const persist = () => Store.set(dkey, D);
     const filled = () => D.kunci.slice(0, D.n).filter(x => /^[ABCD]$/.test(x)).length;
-    const ro = sesi && isAdmin() === false && sesi.guru !== AppState.me.id;
+    const ro = !canTeach(c.mapel, c.kelas);
     function rowHtml(i) {
       const k = D.kunci[i] || '', miss = !k;
       return `<div class="krow ${miss ? 'miss' : ''}" id="kq${i + 1}" data-i="${i}">
@@ -443,7 +472,7 @@ registerPage('kunci', {
       for (let a = 1; a <= D.n; a += 10) ranges.push([a, Math.min(D.n, a + 9)]);
       const totalW = D.bobot.slice(0, D.n).reduce((s, x) => s + (Number(x) || 0), 0);
       el.innerHTML = `<div class="page-h"><button class="btn-icon" onclick="history.back()" aria-label="Kembali">${ic('arrow-left')}</button>
-        <div class="grow"><h1>Kunci Jawaban</h1><p class="muted">${esc(ujianAktif())}${sesi && sesi.guru !== AppState.me.id ? ' · milik ' + esc(AppState.boot.guruNama[sesi.guru] || sesi.guru) : ''}</p></div>
+        <div class="grow"><h1>Kunci Jawaban</h1><p class="muted">${esc(ujianAktif())}${sesi ? ' · terakhir diubah ' + esc(sesi.guru === AppState.me.id ? 'Anda' : (AppState.boot.guruNama[sesi.guru] || sesi.guru)) + (sesi.diubah ? ', ' + esc(fmt.dt(sesi.diubah)) : '') : ' · belum ada kunci'}</p></div>
         <button class="btn-icon solid" id="k-more" aria-label="Menu lain">${ic('ellipsis-vertical')}</button></div>
       ${ctxHeader()}
       <div class="grid-2c"><div>
@@ -534,7 +563,8 @@ registerPage('kunci', {
       $('#pt-ok', L.el).onclick = () => { const a = parse(); if (!a.length) return toast('Tidak ada huruf A–D yang terbaca.', 'warn'); D.kunci = a; D.n = a.length; persist(); L.close(); draw(); toast(a.length + ' kunci ditempel.'); };
     }
     function copyFrom() {
-      const others = (AppState.boot.sesi || []).filter(s => s.ujian === ujianAktif() && s.mapel === c.mapel && s.kelas !== c.kelas && kunciLengkap(s));
+      const seenK = {}, others = (AppState.boot.sesi || []).filter(s => s.ujian === ujianAktif() && s.mapel === c.mapel && s.kelas !== c.kelas && kunciLengkap(s))
+        .sort((a, b) => String(b.diubah || '').localeCompare(String(a.diubah || ''))).filter(s => !seenK[s.kelas] && (seenK[s.kelas] = 1));
       const L = openLayer(`<div class="sh-h"><div class="grow"><h3>Salin dari Kelas Lain</h3><p class="muted small">${esc(mapelNama(c.mapel))} · ${esc(ujianAktif())}</p></div><button class="btn-icon" data-close>${ic('x')}</button></div>
         ${others.length ? '<div class="list">' + others.map(s => `<button class="li" data-s="${esc(s.id)}"><span class="avatar sm">${esc(kelasNama(s.kelas))}</span><div class="grow"><div class="nm">Kelas ${esc(kelasNama(s.kelas))}</div><div class="sub mono">${s.n} soal · ${esc(s.kunci.slice(0, 20))}${s.n > 20 ? '…' : ''} · ${s.mode === 'Manual' ? 'bobot manual' : 'bagi rata'}</div></div>${ic('chevron-right')}</button>`).join('') + '</div>'
           : '<div class="empty">' + ic('copy') + '<h3>Belum ada kunci lain</h3><p>Kunci mapel ini di kelas lain belum dibuat.</p></div>'}`);
@@ -850,8 +880,8 @@ function renderHasilPage(el, tab) {
   let f = hasilFilter(), data = null, status = 'semua', q = '';
   const filtersHtml = () => `<div class="filters">
     <select class="input" id="hf-u">${ujianList().map(u => `<option ${u === f.ujian ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>
-    <select class="input" id="hf-m"><option value="">Semua Mapel</option>${activeMapel().map(m => `<option value="${esc(m.id)}" ${m.id === f.mapel ? 'selected' : ''}>${esc(m.nama)}</option>`).join('')}</select>
-    <select class="input" id="hf-k"><option value="">Semua Kelas</option>${activeKelas().map(k => `<option value="${esc(k.id)}" ${k.id === f.kelas ? 'selected' : ''}>Kelas ${esc(k.nama)}</option>`).join('')}</select></div>`;
+    <select class="input" id="hf-m"><option value="">Semua Mapel</option>${myMapel().map(m => `<option value="${esc(m.id)}" ${m.id === f.mapel ? 'selected' : ''}>${esc(m.nama)}</option>`).join('')}</select>
+    <select class="input" id="hf-k"><option value="">Semua Kelas</option>${myKelas().map(k => `<option value="${esc(k.id)}" ${k.id === f.kelas ? 'selected' : ''}>Kelas ${esc(k.nama)}</option>`).join('')}</select></div>`;
   const shell = () => {
     el.innerHTML = `<div class="page-h"><div class="grow"><h1>${tab === 'daftar' ? 'Hasil Koreksi' : 'Dashboard'}</h1><p class="muted">${isAdmin() ? 'Semua data sekolah' : 'Data milik Anda'}</p></div>
       <button class="btn-icon solid" id="h-ref" aria-label="Segarkan">${ic('refresh-cw')}</button></div>
@@ -1144,7 +1174,7 @@ registerPage('template', {
   title: 'Template LJK',
   render(el) {
     const c = AppState.ctx || {};
-    let o = Object.assign({ format: 'A4-1', isi: 'kosong', pages: 1, petunjuk: true, mapel: c.mapel || (activeMapel()[0] || {}).id, kelas: c.kelas || (activeKelas()[0] || {}).id }, Store.get(userKey('tplOpt'), {}));
+    let o = Object.assign({ format: 'A4-1', isi: 'kosong', pages: 1, petunjuk: true, mapel: c.mapel || (myMapel()[0] || {}).id, kelas: c.kelas || (myKelas()[0] || {}).id }, Store.get(userKey('tplOpt'), {}));
     const save = () => Store.set(userKey('tplOpt'), o);
     const draw = () => {
       const studs = (AppState.maps.siswaByKelas[o.kelas] || []);
@@ -1161,8 +1191,8 @@ registerPage('template', {
         <div class="seg" id="tp-isi"><button data-v="kosong" class="${o.isi === 'kosong' ? 'on' : ''}">Kosong (untuk fotokopi)</button><button data-v="nama" class="${o.isi === 'nama' ? 'on' : ''}">Berisi nama siswa</button></div>
         ${o.isi === 'kosong' ? `<div class="row between" style="margin-top:14px"><div><b>Jumlah halaman</b><div class="muted small">${pages * per} lembar jawaban</div></div>
             <div class="stepper"><button id="tp-dec" aria-label="Kurangi">${ic('minus')}</button><input id="tp-n" class="tnum" inputmode="numeric" value="${o.pages}"><button id="tp-inc" aria-label="Tambah">${ic('plus')}</button></div></div>`
-          : `<div class="grid2" style="margin-top:14px">${'<div class="field" style="margin:0"><label>Mapel</label><select class="input" id="tp-m">' + activeMapel().map(m => `<option value="${esc(m.id)}" ${m.id === o.mapel ? 'selected' : ''}>${esc(m.nama)}</option>`).join('') + '</select></div>'}
-            ${'<div class="field" style="margin:0"><label>Kelas</label><select class="input" id="tp-k">' + activeKelas().map(k => `<option value="${esc(k.id)}" ${k.id === o.kelas ? 'selected' : ''}>Kelas ${esc(k.nama)}</option>`).join('') + '</select></div>'}</div>
+          : `<div class="grid2" style="margin-top:14px">${'<div class="field" style="margin:0"><label>Mapel</label><select class="input" id="tp-m">' + myMapel().map(m => `<option value="${esc(m.id)}" ${m.id === o.mapel ? 'selected' : ''}>${esc(m.nama)}</option>`).join('') + '</select></div>'}
+            ${'<div class="field" style="margin:0"><label>Kelas</label><select class="input" id="tp-k">' + myKelas(o.isi === 'nama' ? o.mapel : null).map(k => `<option value="${esc(k.id)}" ${k.id === o.kelas ? 'selected' : ''}>Kelas ${esc(k.nama)}</option>`).join('') + '</select></div>'}</div>
             <p class="muted small" style="margin-top:8px">Nama, NISN, kelas & mapel tercetak otomatis · ${studs.length} siswa → ${pages} halaman</p>`}
         <label class="check" style="margin-top:10px"><input type="checkbox" id="tp-pet" ${o.petunjuk ? 'checked' : ''}><span>Sertakan halaman <b>petunjuk pengisian</b> (halaman 1)</span></label></div>
       <div class="card"><button class="btn btn-primary btn-block" id="tp-go" style="min-height:54px;font-size:16px">${ic('file-down')} <span>Unduh PDF ${esc(TPL_INFO[o.format].t)}</span></button>
@@ -1184,7 +1214,7 @@ registerPage('template', {
       $$('#tp-isi button', el).forEach(b => b.onclick = () => { o.isi = b.dataset.v; save(); draw(); });
       const setN = n => { o.pages = Math.max(1, Math.min(60, n | 0)); save(); draw(); };
       if ($('#tp-dec', el)) { $('#tp-dec', el).onclick = () => setN(o.pages - 1); $('#tp-inc', el).onclick = () => setN(o.pages + 1); $('#tp-n', el).onchange = e => setN(+e.target.value); }
-      if ($('#tp-m', el)) { $('#tp-m', el).onchange = e => { o.mapel = e.target.value; save(); }; $('#tp-k', el).onchange = e => { o.kelas = e.target.value; save(); draw(); }; }
+      if ($('#tp-m', el)) { $('#tp-m', el).onchange = e => { o.mapel = e.target.value; if (!canTeach(o.mapel, o.kelas)) o.kelas = (myKelas(o.mapel)[0] || {}).id; save(); draw(); }; $('#tp-k', el).onchange = e => { o.kelas = e.target.value; save(); draw(); }; }
       $('#tp-pet', el).onchange = e => { o.petunjuk = e.target.checked; save(); };
       $('#tp-go', el).onclick = e => withBtn(e.currentTarget, async () => {
         if (o.isi === 'nama' && !studs.length) return toast('Kelas ini belum punya siswa.', 'warn');

@@ -37,6 +37,7 @@ const Scanner = {
   stream: null, track: null, video: null, ov: null, worker: null, running: false, paused: false,
   small: document.createElement('canvas'), full: document.createElement('canvas'),
   hist: [], seq: 0, cbs: {}, waiting: {}, torchOn: false, lastErrAt: 0, needClear: false, clearN: 0,
+  HOLD_MS: 500,                                       // kertas diam ±0,5 detik → ambil gambar
 
   initWorker() {
     if (this.worker !== null) return;
@@ -51,8 +52,8 @@ const Scanner = {
     if (!this.worker) {                                     // cadangan: jalan di thread utama
       const img = { width: msg.w, height: msg.h, data: new Uint8ClampedArray(msg.buf) };
       if (msg.type === 'detect') { const r = OMR.findMarkers(OMR.toGray(img)); return Promise.resolve({ pts: r ? r.pts : null }); }
-      const r = OMR.analyze(img, { sens: msg.sens });
-      return Promise.resolve(Object.assign({}, r, r.warped ? { warped: { w: r.warped.width, h: r.warped.height, buf: r.warped.data.buffer } } : {}));
+      const r = OMR.analyze(img, { sens: msg.sens, pts: msg.pts || null });
+      return Promise.resolve(Object.assign({}, r, r.warped ? { warped: { w: r.warped.width, h: r.warped.height, buf: r.warped.gray.buffer } } : {}));
     }
     return new Promise(res => { this.waiting[id] = res; this.worker.postMessage(msg, transfer); });
   },
@@ -98,7 +99,7 @@ const Scanner = {
         const r = await this.call({ type: 'detect', w: W, h: H, buf: img.data.buffer }, [img.data.buffer]);
         if (!this.running) break;
         if (this.paused) continue;
-        const f = vw / W, pts = r.pts ? r.pts.map(p => ({ x: p.x * f, y: p.y * f })) : null;
+        const f = vw / W, pts = r.pts ? r.pts.map(p => ({ x: p.x * f, y: p.y * f, a: p.a * f * f })) : null;
         const now = performance.now();
         if (this.needClear) {                                 // menunggu kertas diganti
           if (!pts) { if (++this.clearN >= 2) this.needClear = false; } else this.clearN = 0;
@@ -111,14 +112,14 @@ const Scanner = {
         this.cbs.onState && this.cbs.onState(pts ? (prog >= 1 ? 'capture' : 'hold') : 'search', prog);
         if (prog >= 1) await this.capture();
       }
-      const dt = performance.now() - t0; await sleep(Math.max(16, 90 - dt));
+      const dt = performance.now() - t0; await sleep(Math.max(12, 55 - dt));   // ±18 deteksi/detik
     }
   },
   stability(vw) {
     const h = this.hist; if (!h.length || !h[h.length - 1].pts) return 0;
     let i = h.length - 1; const last = h[i].pts, tol = vw * 0.018;
     while (i > 0 && h[i - 1].pts && h[i - 1].pts.every((p, k) => Math.hypot(p.x - last[k].x, p.y - last[k].y) < tol)) i--;
-    return Math.min(1, (h[h.length - 1].t - h[i].t) / 900);
+    return Math.min(1, (h[h.length - 1].t - h[i].t) / this.HOLD_MS);
   },
   draw(pts, prog) {
     const c = this.ov, dpr = window.devicePixelRatio || 1, cw = c.clientWidth, ch = c.clientHeight;
@@ -140,16 +141,18 @@ const Scanner = {
   async capture() {
     this.paused = true;
     this.cbs.onBusy && this.cbs.onBusy(true);
-    const vw = this.video.videoWidth, vh = this.video.videoHeight, k = Math.min(1, 1920 / Math.max(vw, vh));
+    const vw = this.video.videoWidth, vh = this.video.videoHeight, k = Math.min(1, 1600 / Math.max(vw, vh));
+    const last = this.hist.length && this.hist[this.hist.length - 1].pts;
+    const pts = last ? last.map(p => ({ x: p.x * k, y: p.y * k, a: p.a * k * k })) : null;   // pakai titik live
     const W = Math.round(vw * k), H = Math.round(vh * k);
     this.full.width = W; this.full.height = H;
     const cx = this.full.getContext('2d', { willReadFrequently: true });
     cx.drawImage(this.video, 0, 0, W, H);
     const img = cx.getImageData(0, 0, W, H);
     const t0 = performance.now();
-    const r = await this.call({ type: 'analyze', w: W, h: H, buf: img.data.buffer, sens: (AppState.boot && AppState.boot.settings.sensitivitas) || 'sedang' }, [img.data.buffer]);
+    const r = await this.call({ type: 'analyze', w: W, h: H, buf: img.data.buffer, pts, sens: (AppState.boot && AppState.boot.settings.sensitivitas) || 'sedang' }, [img.data.buffer]);
     r.ms = Math.round(performance.now() - t0);
-    if (r.warped) r.warpedImg = new ImageData(new Uint8ClampedArray(r.warped.buf), r.warped.w, r.warped.h);
+    if (r.warped) { const rgba = OMR.grayToRGBA({ w: r.warped.w, h: r.warped.h, d: new Uint8ClampedArray(r.warped.buf) }); r.warpedImg = new ImageData(rgba.data, rgba.width, rgba.height); }
     this.cbs.onBusy && this.cbs.onBusy(false);
     if (!this.running) return;
     if (r.ok) { this.cbs.onResult(r); }
@@ -160,7 +163,7 @@ const Scanner = {
       if (performance.now() - this.lastErrAt > 2500) Beep.play('err');
       this.lastErrAt = performance.now();
       this.cbs.onError && this.cbs.onError(msg);
-      this.pause(1400);
+      this.pause(700);
     }
   }
 };
