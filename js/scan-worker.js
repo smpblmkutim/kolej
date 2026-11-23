@@ -1,7 +1,7 @@
 /* Worker pemindai — menjalankan OMR di luar thread tampilan agar kamera tetap mulus
    v1.3: frame tertajam, kalibrasi cahaya redup, voting beberapa frame
    v1.2: memakai titik penanda dari deteksi langsung (lewati pencarian ulang) & hasil pelurusan abu-abu */
-importScripts('omr.js?v=1.3.0');
+importScripts('omr.js?v=1.4.0');
 self.onmessage = function (e) {
   const m = e.data;
   try {

@@ -1,6 +1,6 @@
 # Panduan Instalasi Kolej — Koreksi Lembar Jawaban
 
-SMP Budi Luhur Mandiri · versi 1.3.0
+SMP Budi Luhur Mandiri · versi 1.4.0
 
 Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 
@@ -10,6 +10,25 @@ Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 | **Frontend** | isi ZIP `kolej-frontend.zip` | GitHub Pages (HTTPS, wajib untuk kamera) |
 
 Urutannya: **backend dulu** (untuk mendapat URL `/exec`), lalu isi URL itu ke frontend, lalu unggah frontend.
+
+---
+
+## Yang baru di versi 1.4.0
+
+| Perubahan | Keterangan |
+|---|---|
+| **Tombol back HP berfungsi** | Di **Detail Hasil**, Input Manual, jendela/dialog, dan kamera, tombol back (◁) HP kini menutup layar itu dan kembali ke halaman sebelumnya — aplikasi tidak lagi keluar/diam. Di layar hasil scan, back = kembali ke kamera; di kamera, back = tutup kamera. |
+| **Menu Scan di tengah** | Di HP, tombol **Scan** berupa lingkaran biru besar di tengah menu bawah. Guru: Kunci · Hasil · **Scan** · LJK · Akun. Admin: Beranda · Hasil · **Scan** · Data · Akun. |
+| **Tampilan lebih ringkas** | Kartu "Pemindai LJK langsung di HP" di halaman login dihapus. Setelah scan, banner cukup bertuliskan **Scan berhasil, hasil tersimpan** (atau *ada yang perlu dicek*). |
+| **No. Peserta di LJK** | Isian **NISN** di lembar jawaban diganti **No. Peserta** (ditulis siswa). Data siswa di aplikasi tetap memakai NISN. |
+| **Pratinjau LJK** | Di **Template LJK** ada kartu **3. Pratinjau**: tampil langsung (tanpa internet) persis seperti PDF, ikut berubah saat format/isi diganti. Ketuk halaman untuk memperbesar. |
+| **Tingkat kelas 1–12** | Data Kelas kini bisa tingkat **1–6 (SD)**, **7–9 (SMP)**, **10–12 (SMA/SMK)**. Tingkat terisi otomatis dari nama kelas (mis. *10 IPA 1* → 10). |
+
+**Memperbarui dari 1.3.x:**
+1. **Backend:** tempel `Kode.gs` baru → Simpan → **Terapkan → Kelola deployment → ✏️ Edit → Versi baru → Terapkan** (bukan *Deployment baru*). Perubahan: tingkat kelas 1–12 & nomor versi. Tidak perlu menjalankan `setupKolej` lagi; data lama aman.
+2. **Frontend:** ganti isi repo dengan ZIP baru (isi ulang `GAS_URL` di `js/config.js`) → `git add .` → `git commit -m "Kolej 1.4.0"` → `git push`.
+3. Di HP, ketuk **Muat ulang** saat muncul "Versi baru Kolej tersedia" → pastikan **Akun** menunjukkan **v1.4.0**.
+4. Lembar jawaban yang sudah dicetak dengan kolom NISN **tetap bisa dipindai** — posisi kotak jawaban tidak berubah.
 
 ---
 
@@ -153,13 +172,13 @@ Panduan singkat untuk dibagikan ke guru (WhatsApp/PDF): **`PANDUAN-PASANG-APLIKA
 
 ### C2. Siapkan data (Admin)
 1. **Pengaturan** → isi nama sekolah, **ujian aktif** (mis. *PAS Genap 2025/2026*), KKM, warna tema → **Simpan**.
-2. **Data Mapel** dan **Data Kelas** → sesuaikan (data contoh boleh dinonaktifkan).
+2. **Data Mapel** dan **Data Kelas** → sesuaikan (data contoh boleh dinonaktifkan). Tingkat kelas bisa 1–12 (SD/SMP/SMA).
 3. **Data Mapel** → atur **KKM** tiap mapel (kosong = KKM bawaan dari Pengaturan).
 4. **Data Guru** → **Tambah** (setelah disimpan, langsung muncul lembar **Tugas Mengajar**: ketuk kelas untuk tiap mapel yang diajar guru itu) setiap guru + password awal. Berikan password itu ke guru; mereka wajib menggantinya saat login pertama. Nonaktifkan 2 guru contoh.
 5. **Data Siswa** → **Unduh Template** → isi di Excel (kolom NISN sudah berformat teks) → **Impor Excel** → periksa pratinjau (baris merah = perlu diperbaiki) → **Simpan Data Valid**.
 
 ### C3. Cetak lembar jawaban
-Buka menu **Template LJK** (sidebar laptop, menu Data untuk admin di HP, atau Akun → Template Lembar Jawaban).
+Buka menu **Template LJK** (sidebar laptop, menu **LJK** di bawah untuk guru di HP, atau menu Data untuk admin di HP).
 
 | Format | Isi per halaman | Ukuran kotak | Cocok untuk |
 |---|---|---|---|
@@ -167,7 +186,8 @@ Buka menu **Template LJK** (sidebar laptop, menu Data untuk admin di HP, atau Ak
 | **A4 dibagi dua** | 2 lembar, digunting | 4,8 mm | Hemat kertas A4 |
 | **F4 dibagi dua** | 2 lembar, digunting | 5,5 mm | Kertas F4/Folio |
 
-- **Kosong (untuk fotokopi)** atau **Berisi nama siswa** — nama, NISN, kelas, dan mapel tercetak otomatis per siswa.
+- **Kosong (untuk fotokopi)** atau **Berisi nama siswa** — nama, kelas, dan mapel tercetak otomatis per siswa; **No. Peserta** ditulis siswa sendiri.
+- Periksa **Pratinjau** sebelum menekan **Unduh PDF** (ketuk halaman untuk memperbesar).
 - Centang **halaman petunjuk pengisian** (halaman 1): contoh cara mengisi yang benar & salah, untuk dibacakan/ditempel sebelum ujian.
 - **Unduhan cepat**: PDF siap cetak ketiga format tetap bisa diunduh tanpa internet.
 - Cetak skala **100% / Ukuran sebenarnya** (jangan *Fit to page*). Fotokopi hitam pekat. Keempat **kotak hitam di sudut** dan **batang hitam kecil di kiri atas** jangan terpotong/tertutup.

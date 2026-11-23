@@ -33,6 +33,13 @@ const mapelNama = id => (AppState.maps.mapel.get(id) || {}).nama || id;
 function kkmDefault() { return Number(AppState.boot.settings.kkm) || 75; }
 function kkmOf(mapel) { const m = AppState.maps.mapel.get(mapel); return m && m.kkm !== '' && !isNaN(Number(m.kkm)) ? Number(m.kkm) : kkmDefault(); }
 const kelasNama = id => (AppState.maps.kelas.get(id) || {}).nama || id;
+/* Tingkat kelas 1–12: SD (1–6), SMP (7–9), SMA/SMK (10–12) */
+function jenjang(t) { const n = +t; return n >= 1 && n <= 6 ? 'SD' : n >= 7 && n <= 9 ? 'SMP' : n >= 10 && n <= 12 ? 'SMA' : ''; }
+function tingkatDari(nama) { const m = String(nama || '').match(/\d+/g) || []; const n = m.map(Number).find(v => v >= 1 && v <= 12); return n ? String(n) : ''; }
+function tingkatOptions(sel) {
+  return [['SD', 1, 6], ['SMP', 7, 9], ['SMA / SMK', 10, 12]].map(([g, a, b]) => '<optgroup label="' + g + '">' +
+    Array.from({ length: b - a + 1 }, (_, i) => String(a + i)).map(t => '<option value="' + t + '" ' + (String(sel) === t ? 'selected' : '') + '>Kelas ' + t + '</option>').join('') + '</optgroup>').join('');
+}
 function activeMapel() { return [...AppState.maps.mapel.values()].filter(x => x.status === 'Aktif').sort((a, b) => a.nama.localeCompare(b.nama)); }
 function activeKelas() { return [...AppState.maps.kelas.values()].filter(x => x.status === 'Aktif').sort((a, b) => a.nama.localeCompare(b.nama, 'id', { numeric: true })); }
 /** Mapel & kelas yang boleh dipakai: admin = semua; guru = sesuai penugasan admin. */
@@ -204,9 +211,6 @@ function renderLogin() {
       </div>
       <button class="btn btn-ghost btn-block" id="lg-switch" style="margin-top:14px">${ic('shield-check')} <span>Masuk sebagai Admin</span></button>
       ${installCard('margin-top:14px')}
-      <div class="card" style="margin-top:14px;background:var(--surface-2);display:flex;gap:12px;align-items:center">
-        <span class="stat" style="padding:10px;margin:0;background:var(--surface);color:var(--accent-ink)">${ic('zap')}</span>
-        <div><b>Pemindai LJK langsung di HP</b><p class="muted small">50 soal pilihan ganda A–D · tanda X · bunyi beep saat berhasil</p></div></div>
       <p class="muted small" style="text-align:center;margin-top:18px">Versi ${esc(window.KOLEJ_CONFIG.APP_VERSION)} · Kolej ${esc(pub.sekolah)}</p>
     </div>
   </div>`;
@@ -258,8 +262,9 @@ function renderLogin() {
 }
 
 /* ---------------- Kerangka & router ---------------- */
-const NAV_GURU = [['scan', 'Scan', 'scan-line'], ['kunci', 'Kunci', 'key-round'], ['hasil', 'Hasil', 'chart-column'], ['akun', 'Akun', 'circle-user']];
-const NAV_ADMIN_MOB = [['dashboard', 'Dashboard', 'layout-dashboard'], ['scan', 'Scan', 'scan-line'], ['hasil', 'Hasil', 'chart-column'], ['data', 'Data', 'list'], ['akun', 'Akun', 'circle-user']];
+// Menu bawah HP: Scan selalu di tengah dan menonjol
+const NAV_GURU = [['kunci', 'Kunci', 'key-round'], ['hasil', 'Hasil', 'chart-column'], ['scan', 'Scan', 'scan-line'], ['template', 'LJK', 'printer'], ['akun', 'Akun', 'circle-user']];
+const NAV_ADMIN_MOB = [['dashboard', 'Beranda', 'layout-dashboard'], ['hasil', 'Hasil', 'chart-column'], ['scan', 'Scan', 'scan-line'], ['data', 'Data', 'list'], ['akun', 'Akun', 'circle-user']];
 const SIDE_ADMIN = [
   ['Menu Utama', [['dashboard', 'Dashboard', 'layout-dashboard'], ['scan', 'Scan LJK', 'scan-line'], ['kunci', 'Kunci Jawaban', 'key-round'], ['hasil', 'Hasil', 'clipboard-check'], ['template', 'Template LJK', 'printer']]],
   ['Data Master', [['guru', 'Data Guru', 'graduation-cap'], ['mapel', 'Data Mapel', 'book-open'], ['kelas', 'Data Kelas', 'building-2'], ['siswa', 'Data Siswa', 'users']]],
@@ -284,7 +289,9 @@ function startApp() {
         <a href="#/akun" class="avatar sm" aria-label="Akun" style="text-decoration:none">${esc(fmt.initials(AppState.me.nama))}</a></header>
       <main class="content" id="view"></main>
     </div>
-    <nav class="bottomnav">${nav.map(([r, t, i]) => `<a href="#/${r}" data-r="${r}">${ic(i, 'lg')}<span>${t}</span></a>`).join('')}</nav>
+    <nav class="bottomnav">${nav.map(([r, t, i]) => r === 'scan'
+      ? `<a href="#/${r}" data-r="${r}" class="nav-scan" aria-label="Scan LJK"><span class="fab">${ic(i, 'lg')}</span><span>${t}</span></a>`
+      : `<a href="#/${r}" data-r="${r}">${ic(i, 'lg')}<span>${t}</span></a>`).join('')}</nav>
   </div>`;
   $('#sb-out').onclick = e => { e.preventDefault(); logout(); };
   $('#tb-theme').onclick = () => { const d = document.documentElement.dataset.theme === 'dark'; setMode(d ? 'terang' : 'gelap'); $('#tb-theme').innerHTML = ic(d ? 'sun' : 'moon'); };
@@ -332,7 +339,7 @@ function route(soft) {
   if (def.needCtx && !AppState.ctx) { location.hash = '#/pilih'; return; }
   if (['kunci', 'scan', 'pilih', 'hasil', 'dashboard'].includes(name)) refreshBoot(15000);
   $$('.sidebar a[data-r], .bottomnav a[data-r]').forEach(a => {
-    const r = a.dataset.r, on = r === name || (name === 'pilih' && r === 'scan') || (['guru', 'mapel', 'kelas', 'siswa', 'pengaturan', 'log'].includes(name) && r === 'data') || (name === 'template' && r === (isAdmin() ? 'data' : 'akun'));
+    const r = a.dataset.r, on = r === name || (name === 'pilih' && r === 'scan') || (['guru', 'mapel', 'kelas', 'siswa', 'pengaturan', 'log'].includes(name) && r === 'data') || (name === 'template' && isAdmin() && r === 'data');
     a.classList.toggle('on', on);
   });
   $('#tb-title').textContent = def.title || 'Kolej';
@@ -402,7 +409,7 @@ function quickSwitch() {
       if (!(await setContext(mapel, b.dataset.k))) return;
       L.close();
       const page = location.hash.indexOf('#/kunci') === 0 ? '#/kunci' : (kunciLengkap(sesiFor(mapel, b.dataset.k)) ? '#/scan' : '#/kunci');
-      if (location.hash === page) route(); else location.hash = page;
+      nav(page);
       toast(mapelNama(mapel) + ' · Kelas ' + kelasNama(b.dataset.k), 'info', 1600);
     });
   };
@@ -419,12 +426,12 @@ registerPage('pilih', {
     let mapel = c.mapel && mp.some(m => m.id === c.mapel) ? c.mapel : (mp[0] && mp[0].id);
     if (!mp.length) { el.innerHTML = `<div class="page-h"><h1>Pilih Mapel & Kelas</h1></div>` + NO_AJAR.replace('<svg class="i" viewBox="0 0 24 24"></svg>', ic('book-open')); return; }
     const draw = () => {
-      const kel = myKelas(mapel), tingkat = [...new Set(kel.map(k => k.tingkat || '-'))];
+      const kel = myKelas(mapel), tingkat = [...new Set(kel.map(k => k.tingkat || '-'))].sort((p, q) => (+p || 99) - (+q || 99));
       el.innerHTML = `<div class="page-h"><div><h1>Pilih Mapel & Kelas</h1><p class="muted">${esc(ujianAktif())} · ${isAdmin() ? 'pilih mata pelajaran lalu kelas' : 'mapel & kelas sesuai tugas mengajar dari admin'}</p></div></div>
       <div class="label-sm" style="margin:6px 0 8px">Mata Pelajaran</div>
       <div class="chips" style="flex-wrap:wrap">${mp.map(m => `<button class="chip pick ${m.id === mapel ? 'on' : ''}" data-m="${esc(m.id)}">${esc(m.nama)}</button>`).join('') || '<p class="muted">Belum ada mapel. Minta admin menambahkan data mapel.</p>'}</div>
       <div class="label-sm" style="margin:20px 0 8px">Kelas</div>
-      ${tingkat.map(t => `<div class="muted small" style="margin:10px 0 6px">Kelas ${esc(t)}</div>
+      ${tingkat.map(t => `<div class="muted small" style="margin:10px 0 6px">Kelas ${esc(t)}${jenjang(t) ? ' · ' + jenjang(t) : ''}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">${kel.filter(k => (k.tingkat || '-') === t).map(k => {
         const s = sesiFor(mapel, k.id), p = progressOf(s, k.id), on = c.mapel === mapel && c.kelas === k.id;
         return `<button class="card" data-k="${esc(k.id)}" style="text-align:left;cursor:pointer;margin:0;${on ? 'border-color:var(--primary);box-shadow:0 0 0 2px var(--primary)' : ''}">
@@ -435,7 +442,7 @@ registerPage('pilih', {
       $$('[data-m]', el).forEach(b => b.onclick = () => { mapel = b.dataset.m; draw(); });
       $$('[data-k]', el).forEach(b => b.onclick = async () => {
         if (!(await setContext(mapel, b.dataset.k))) return;
-        location.hash = kunciLengkap(sesiFor(mapel, b.dataset.k)) ? '#/scan' : '#/kunci';
+        nav(kunciLengkap(sesiFor(mapel, b.dataset.k)) ? '#/scan' : '#/kunci');
       });
     };
     draw();
@@ -604,7 +611,7 @@ registerPage('kunci', {
         Store.del(dkey); saveBootLocal(); buildMaps();
         toast(res.message);
         if (res.data.recalced) { Store.del(userKey('hasil:' + ujianAktif())); swr('boot', 'boot', {}, d => { AppState.boot = d; buildMaps(); }, { force: true }); }
-        location.hash = '#/scan';
+        nav('#/scan');
       });
     }
     draw();
@@ -686,7 +693,9 @@ async function openScanner(sesi, nisn, skipConfirm) {
   document.body.appendChild(wrap); document.body.style.overflow = 'hidden';
   SC = { sesi, nisn, wrap, kelas: c.kelas };
   const msg = (t, cls) => { const m = $('#sm', wrap); m.className = 'sc-toast ' + (cls || ''); m.innerHTML = '<i class="dot"></i><span>' + esc(t) + '</span>'; };
-  const close = () => { Scanner.stop(); wrap.remove(); document.body.style.overflow = ''; SC = null; route(true); };
+  const shut = () => { Scanner.stop(); wrap.remove(); document.body.style.overflow = ''; SC = null; route(true); };
+  const unreg = overlay(() => { const f = $('.fullpage', wrap); if (f) f.remove(); shut(); });   // back HP = tutup kamera
+  const close = () => { unreg(); shut(); };
   $('#sx', wrap).onclick = close;
   $('#ss', wrap).onclick = () => { const v = !Store.get('sound', true); Store.set('sound', v); $('#ss', wrap).innerHTML = ic(v ? 'volume-2' : 'volume-x'); };
   $('#st', wrap).onclick = async () => { const ok = await Scanner.torch(!Scanner.torchOn); if (!ok) toast('Senter tidak didukung di perangkat/browser ini.', 'warn'); $('#st', wrap).classList.toggle('on', Scanner.torchOn); };
@@ -773,22 +782,25 @@ async function manualEntry(sesi, nisn) {
   if (!(await confirmOverwrite(sesi, nisn))) return;
   const s = AppState.maps.siswa.get(nisn) || { nama: nisn, nisn }, n = sesi.n, arr = Array(50).fill('-');
   const fp = document.createElement('div'); fp.className = 'fullpage'; document.body.appendChild(fp);
+  const unreg = overlay(() => fp.remove());
   fp.innerHTML = `<header class="topbar"><button class="btn-icon" data-x aria-label="Tutup">${ic('x')}</button><div class="grow"><div class="t1 ellip">Input Manual · ${esc(s.nama)}</div><div class="t2">${esc(mapelNama(sesi.mapel))} · Kelas ${esc(kelasNama(sesi.kelas))} · ${n} soal</div></div></header>
     <div class="content" style="max-width:640px"><div class="info" style="margin-bottom:12px">${ic('keyboard')}<div>Ketuk jawaban siswa sesuai lembarnya. Biarkan <b>–</b> bila soal tidak dijawab. Nilai dihitung otomatis.</div></div>
     <div id="me-rows">${Array.from({ length: n }, (_, i) => `<div class="krow" data-i="${i}"><div class="no tnum">${String(i + 1).padStart(2, '0')}</div><div class="opts">${'ABCD'.split('').map(o => `<button class="opt" data-o="${o}">${o}</button>`).join('')}<button class="opt on" data-o="-" aria-label="Kosong">–</button></div></div>`).join('')}</div></div>
     <div class="fp-act"><div class="grow"><div class="small muted">Nilai sementara</div><b class="tnum" id="me-v" style="font:700 22px var(--font-b)">0</b></div><button class="btn btn-primary" id="me-save" style="flex:1.4">${ic('save')} <span>Simpan Nilai</span></button></div>`;
   const upd = () => { $('#me-v', fp).textContent = fmt.num(OMR.score(arr.join('').slice(0, n), sesi.kunci, sesi.mode, sesi.bobot ? sesi.bobot.split(',') : null).nilai); };
   $('#me-rows', fp).onclick = e => { const b = e.target.closest('.opt'); if (!b) return; const row = b.closest('.krow'); arr[+row.dataset.i] = b.dataset.o; $$('.opt', row).forEach(x => x.classList.toggle('on', x === b)); upd(); };
-  $('[data-x]', fp).onclick = () => fp.remove();
+  $('[data-x]', fp).onclick = () => { unreg(); fp.remove(); };
   $('#me-save', fp).onclick = e => withBtn(e.currentTarget, async () => {
     const R = { idScan: 'H' + uuid().replace(/-/g, '').slice(0, 12).toUpperCase(), jawaban: arr.join(''), status: 'Dikoreksi manual' };
     saveHasil(sesi, nisn, R, false);
-    fp.remove(); toast('Nilai ' + s.nama + ' tersimpan: ' + fmt.num(R.score.nilai)); route(true);
+    unreg(); fp.remove(); toast('Nilai ' + s.nama + ' tersimpan: ' + fmt.num(R.score.nilai)); route(true);
   });
 }
 function showScanResult(R) {
   const sesi = SC.sesi, n = sesi.n, s = AppState.maps.siswa.get(SC.nisn) || { nama: SC.nisn, nisn: SC.nisn };
   const fp = document.createElement('div'); fp.className = 'fullpage'; SC.wrap.appendChild(fp);
+  const unreg = overlay(() => { fp.remove(); Scanner.resume(); });
+  const leave = () => { unreg(); fp.remove(); };
   const draw = () => {
     const sc = R.score, kkm = kkmOf(sesi.mapel), ragu = [];
     for (let i = 0; i < n; i++) if (R.jawaban[i] === '*') ragu.push(i + 1);
@@ -797,7 +809,7 @@ function showScanResult(R) {
     const img = canvas.toDataURL('image/jpeg', 0.8);
     fp.innerHTML = `<header class="topbar"><button class="btn-icon" id="rb-back" aria-label="Kembali">${ic('arrow-left')}</button><div class="grow"><div class="t1">Hasil Pemeriksaan</div><div class="t2">${esc(AppState.boot.settings.nama_sekolah)}</div></div></header>
     <div class="content" style="max-width:640px">
-      <div class="info ${ragu.length ? 'warn' : 'ok'}" style="font-size:14px">${ic(ragu.length ? 'triangle-alert' : 'circle-check')}<div class="grow"><b style="font:700 16px var(--font-h)">${ragu.length ? 'Scan berhasil, ada yang perlu dicek' : 'Scan berhasil, hasil tersimpan'}</b><br><span class="muted">Dibaca otomatis dalam ${fmt.num((R.res.ms || 0) / 1000, 1)} detik${R.res.frames > 1 ? ' · dipastikan dari ' + R.res.frames + ' frame' + (R.res.fixed ? ' (' + R.res.fixed + ' soal terkoreksi)' : '') : ''}</span></div><span class="chip ${R.status === 'Dikoreksi manual' ? 'p' : 'a'}">${R.status === 'Dikoreksi manual' ? 'Manual' : 'Otomatis'}</span></div>
+      <div class="info ${ragu.length ? 'warn' : 'ok'}" style="font-size:14px">${ic(ragu.length ? 'triangle-alert' : 'circle-check')}<div class="grow"><b style="font:700 16px var(--font-h)">${ragu.length ? 'Scan berhasil, ada yang perlu dicek' : 'Scan berhasil, hasil tersimpan'}</b></div></div>
       <div class="card" style="margin-top:12px"><div class="row" style="gap:14px"><span class="avatar" style="width:56px;height:56px;font-size:18px">${esc(fmt.initials(s.nama))}</span>
         <div class="grow"><h2 class="ellip">${esc(s.nama)}</h2><div class="muted small mono">NISN ${esc(s.nisn)} · ${esc(mapelNama(sesi.mapel))}</div>
         <div class="row" style="gap:6px;margin-top:6px"><span class="chip">Kelas ${esc(kelasNama(sesi.kelas))}</span><span class="chip out">${ic('history')} ${fmt.time(new Date())}</span></div></div></div></div>
@@ -813,10 +825,10 @@ function showScanResult(R) {
     </div>
     <div class="fp-act"><button class="btn btn-soft" id="rb-again">${ic('camera')} Scan Ulang</button><button class="btn btn-primary grow" id="rb-next">${next ? `<span class="ellip">Lanjut: ${esc(next.nama)}</span> ${ic('arrow-right')}` : ic('check') + ' Selesai'}</button></div>`;
     $('#rb-img', fp).onclick = () => zoomImage(img);
-    $('#rb-back', fp).onclick = () => { fp.remove(); Scanner.resume(); };
-    $('#rb-again', fp).onclick = () => { fp.remove(); Scanner.resume(); };
+    $('#rb-back', fp).onclick = () => { leave(); Scanner.resume(); };
+    $('#rb-again', fp).onclick = () => { leave(); Scanner.resume(); };
     $('#rb-next', fp).onclick = () => {
-      fp.remove();
+      leave();
       if (next) { SC.lastJawaban = R.jawaban; SC.lastNisn = SC.nisn; SC.nisn = next.nisn; SC.renderBottom(); Scanner.resume(true); }
       else { $('#sx', SC.wrap).click(); toast('Semua siswa kelas ini sudah di-scan. 🎉'); }
     };
@@ -1008,7 +1020,8 @@ async function openHasilDetail(id, opt = {}) {
   const S = sesiMapAll()[r.sesi];
   if (!S) return toast('Kunci jawaban sesi ini tidak tersedia.', 'bad');
   const fp = document.createElement('div'); fp.className = 'fullpage'; document.body.appendChild(fp);
-  const close = () => { fp.remove(); route(true); };
+  const unreg = overlay(() => { fp.remove(); route(true); });          // back HP = tutup detail
+  const close = () => { unreg(); fp.remove(); route(true); };
   const draw = () => {
     const kkm = kkmOf(r.mapel);
     fp.innerHTML = `<header class="topbar"><button class="btn-icon" id="hd-x" aria-label="Kembali">${ic('arrow-left')}</button><div class="grow"><div class="t1">Detail Hasil</div><div class="t2">${esc(mapelNama(r.mapel))} · Kelas ${esc(kelasNama(r.kelas))}</div></div>
@@ -1032,7 +1045,7 @@ async function openHasilDetail(id, opt = {}) {
         Object.assign(r, res.data); patchHasilCache(res.data); draw(); toast('Koreksi tersimpan. Nilai: ' + fmt.num(res.data.nilai));
       });
     };
-    const rs = $('#hd-rescan', fp); if (rs) rs.onclick = () => { fp.remove(); openScanner(opt.sesi || S, r.nisn); };
+    const rs = $('#hd-rescan', fp); if (rs) rs.onclick = () => { unreg(); fp.remove(); openScanner(opt.sesi || S, r.nisn); };
     const del = $('#hd-del', fp); if (del) del.onclick = async () => {
       if (!(await confirmDlg({ title: 'Hapus hasil ini?', text: 'Hasil ' + r.nama + ' (' + mapelNama(r.mapel) + ') akan dihapus permanen beserta foto buktinya.', ok: 'Hapus', danger: true, icon: 'trash-2' }))) return;
       await withBtn(del, async () => {
@@ -1179,6 +1192,32 @@ registerPage('template', {
     const c = AppState.ctx || {};
     let o = Object.assign({ format: 'A4-1', isi: 'kosong', pages: 1, petunjuk: true, mapel: c.mapel || (myMapel()[0] || {}).id, kelas: c.kelas || (myKelas()[0] || {}).id }, Store.get(userKey('tplOpt'), {}));
     const save = () => Store.set(userKey('tplOpt'), o);
+    const buildOpt = (studs) => {
+      const s = AppState.boot.settings;
+      const students = o.isi === 'nama' ? studs.map(x => ({ nama: x.nama, kelas: kelasNama(x.kelas), mapel: mapelNama(o.mapel) })) : null;
+      return { format: o.format, sekolah: s.nama_sekolah, ujian: s.ujian_aktif, petunjuk: o.petunjuk, pages: o.pages, students };
+    };
+    // Pratinjau: digambar dengan kode yang sama seperti PDF (tanpa internet), maks. 3 halaman pertama
+    let pvT = 0;
+    const schedulePreview = (studs) => {
+      clearTimeout(pvT);
+      pvT = setTimeout(() => {
+        const box = $('#tp-prev', el); if (!box) return;
+        if (o.isi === 'nama' && !studs.length) { box.innerHTML = '<div class="empty small">Kelas ini belum punya siswa.</div>'; $('#tp-pg', el).textContent = ''; return; }
+        try {
+          const doc = LJK.preview(buildOpt(studs)), n = doc.getNumberOfPages(), show = Math.min(n, 3);
+          box.innerHTML = '';
+          for (let i = 0; i < show; i++) {
+            const cv = doc.render(i, 3.2), fig = document.createElement('button');
+            fig.className = 'tpl-pg'; fig.type = 'button'; fig.setAttribute('aria-label', 'Perbesar halaman ' + (i + 1));
+            fig.innerHTML = '<span class="no">' + (i + 1) + '</span>'; fig.prepend(cv);
+            fig.onclick = () => zoomImage(doc.render(i, 6).toDataURL('image/png'));
+            box.appendChild(fig);
+          }
+          $('#tp-pg', el).textContent = n + ' halaman' + (n > show ? ' · tampil ' + show + ' pertama' : '');
+        } catch (err) { box.innerHTML = '<div class="empty small">Pratinjau tidak tersedia: ' + esc(err.message) + '</div>'; }
+      }, 120);
+    };
     const draw = () => {
       const studs = (AppState.maps.siswaByKelas[o.kelas] || []);
       const per = TPL_INFO[o.format].halves, pages = o.isi === 'nama' ? Math.ceil(studs.length / per) : o.pages;
@@ -1196,8 +1235,11 @@ registerPage('template', {
             <div class="stepper"><button id="tp-dec" aria-label="Kurangi">${ic('minus')}</button><input id="tp-n" class="tnum" inputmode="numeric" value="${o.pages}"><button id="tp-inc" aria-label="Tambah">${ic('plus')}</button></div></div>`
           : `<div class="grid2" style="margin-top:14px">${'<div class="field" style="margin:0"><label>Mapel</label><select class="input" id="tp-m">' + myMapel().map(m => `<option value="${esc(m.id)}" ${m.id === o.mapel ? 'selected' : ''}>${esc(m.nama)}</option>`).join('') + '</select></div>'}
             ${'<div class="field" style="margin:0"><label>Kelas</label><select class="input" id="tp-k">' + myKelas(o.isi === 'nama' ? o.mapel : null).map(k => `<option value="${esc(k.id)}" ${k.id === o.kelas ? 'selected' : ''}>Kelas ${esc(k.nama)}</option>`).join('') + '</select></div>'}</div>
-            <p class="muted small" style="margin-top:8px">Nama, NISN, kelas & mapel tercetak otomatis · ${studs.length} siswa → ${pages} halaman</p>`}
+            <p class="muted small" style="margin-top:8px">Nama, kelas & mapel tercetak otomatis (No. Peserta ditulis siswa) · ${studs.length} siswa → ${pages} halaman</p>`}
         <label class="check" style="margin-top:10px"><input type="checkbox" id="tp-pet" ${o.petunjuk ? 'checked' : ''}><span>Sertakan halaman <b>petunjuk pengisian</b> (halaman 1)</span></label></div>
+      <div class="card"><div class="row between" style="margin-bottom:10px"><h3>3. Pratinjau</h3><span class="muted small" id="tp-pg"></span></div>
+        <div class="tpl-prev" id="tp-prev"><div class="skel" style="height:220px;border-radius:10px"></div></div>
+        <p class="muted small" style="margin-top:8px">Ketuk halaman untuk memperbesar. Periksa dulu sebelum mengunduh.</p></div>
       <div class="card"><button class="btn btn-primary btn-block" id="tp-go" style="min-height:54px;font-size:16px">${ic('file-down')} <span>Unduh PDF ${esc(TPL_INFO[o.format].t)}</span></button>
         <div class="info" style="margin-top:12px">${ic('printer')}<div><b>Saat mencetak:</b> skala <b>100% / Ukuran sebenarnya</b> (jangan "Fit to page"), kertas <b>${o.format === 'F4-2' ? 'F4/Folio' : 'A4'}</b>${o.format === 'A4-1' ? ' posisi <b>mendatar</b>' : ''}. Fotokopi hitam pekat${per > 1 ? ', lalu gunting di garis putus-putus' : ''}.</div></div></div>
       </div><div>
@@ -1218,13 +1260,13 @@ registerPage('template', {
       const setN = n => { o.pages = Math.max(1, Math.min(60, n | 0)); save(); draw(); };
       if ($('#tp-dec', el)) { $('#tp-dec', el).onclick = () => setN(o.pages - 1); $('#tp-inc', el).onclick = () => setN(o.pages + 1); $('#tp-n', el).onchange = e => setN(+e.target.value); }
       if ($('#tp-m', el)) { $('#tp-m', el).onchange = e => { o.mapel = e.target.value; if (!canTeach(o.mapel, o.kelas)) o.kelas = (myKelas(o.mapel)[0] || {}).id; save(); draw(); }; $('#tp-k', el).onchange = e => { o.kelas = e.target.value; save(); draw(); }; }
-      $('#tp-pet', el).onchange = e => { o.petunjuk = e.target.checked; save(); };
+      $('#tp-pet', el).onchange = e => { o.petunjuk = e.target.checked; save(); draw(); };
+      schedulePreview(studs);
       $('#tp-go', el).onclick = e => withBtn(e.currentTarget, async () => {
         if (o.isi === 'nama' && !studs.length) return toast('Kelas ini belum punya siswa.', 'warn');
         try {
           const jsPDF = await loadJsPDF(), s = AppState.boot.settings;
-          const students = o.isi === 'nama' ? studs.map(x => ({ nama: x.nama, nisn: x.nisn, kelas: kelasNama(x.kelas), mapel: mapelNama(o.mapel) })) : null;
-          const doc = LJK.build(jsPDF, { format: o.format, sekolah: s.nama_sekolah, ujian: s.ujian_aktif, petunjuk: o.petunjuk, pages: o.pages, students });
+          const doc = LJK.build(jsPDF, buildOpt(studs));
           const name = ['Lembar Jawaban', TPL_INFO[o.format].t, o.isi === 'nama' ? mapelNama(o.mapel) + ' Kelas ' + kelasNama(o.kelas) : ''].filter(Boolean).join(' - ').replace(/[\\/:*?"<>|]/g, '');
           doc.save(name + '.pdf');
           toast('PDF diunduh (' + doc.getNumberOfPages() + ' halaman).');

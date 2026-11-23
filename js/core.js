@@ -174,6 +174,36 @@ function contrast(hex1, hex2) {
   const a = lum(hex1), b = lum(hex2); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
+/* ---------------- Tombol BACK HP untuk lapisan (detail, hasil scan, kamera, dialog) ----------------
+   Setiap lapisan yang dibuka menambah satu entri riwayat. Tombol back HP → menutup lapisan teratas.
+   Bila lapisan ditutup lewat tombol di layar, entri riwayatnya ikut dibuang (history.back yang "diabaikan"). */
+const Overlays = {
+  stack: [], seq: 0, skip: 0, waiters: [],
+  open(onBack) {
+    const id = ++this.seq; this.stack.push({ id, onBack });
+    this.idle().then(() => { if (this.stack.some(x => x.id === id)) history.pushState({ kolejOv: id }, ''); });
+    return id;
+  },
+  close(id) {
+    const i = this.stack.findIndex(x => x.id === id); if (i < 0) return;
+    this.stack.splice(i, 1); this.skip++; history.back();
+  },
+  idle() { return this.skip ? new Promise(r => this.waiters.push(r)) : Promise.resolve(); }
+};
+addEventListener('popstate', () => {
+  if (Overlays.skip) {
+    Overlays.skip--;
+    if (!Overlays.skip) { const w = Overlays.waiters; Overlays.waiters = []; w.forEach(f => f()); }
+    return;
+  }
+  const top = Overlays.stack.pop();
+  if (top) top.onBack();
+});
+/** Daftarkan lapisan; kembalikan fungsi "tutup dari layar" (membersihkan entri riwayat). */
+function overlay(onBack) { const id = Overlays.open(onBack); return () => Overlays.close(id); }
+/** Pindah halaman setelah semua lapisan selesai ditutup (hindari bentrok dengan history.back). */
+function nav(hash) { Overlays.idle().then(() => { if (location.hash === hash) { if (typeof route === 'function') route(); } else location.hash = hash; }); }
+
 /* ---------------- Toast, dialog, sheet ---------------- */
 function toast(msg, type = 'ok', ms = 2800) {
   let host = $('.toast-host'); if (!host) { host = document.createElement('div'); host.className = 'toast-host'; document.body.appendChild(host); }
@@ -187,8 +217,9 @@ function openLayer(html, opt = {}) {
   lay.className = 'layer' + (opt.center ? ' center' : '');
   lay.innerHTML = '<div class="sheet ' + (opt.wide ? 'wide' : '') + '" role="dialog" aria-modal="true">' + html + '</div>';
   document.body.appendChild(lay);
-  const close = (v) => { if (!lay.isConnected) return; lay.remove(); opt.onClose && opt.onClose(v); };
-  if (!opt.sticky) lay.addEventListener('click', e => { if (e.target === lay) close(); });
+  let ovId = 0;
+  const close = (v, fromBack) => { if (!lay.isConnected) return; lay.remove(); if (ovId && !fromBack) Overlays.close(ovId); opt.onClose && opt.onClose(v); };
+  if (!opt.sticky) { ovId = Overlays.open(() => close(undefined, true)); lay.addEventListener('click', e => { if (e.target === lay) close(); }); }
   $$('[data-close]', lay).forEach(b => b.addEventListener('click', () => close()));
   return { el: $('.sheet', lay), close, lay };
 }

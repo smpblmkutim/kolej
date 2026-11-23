@@ -34,15 +34,17 @@
     fit(ttl, 'bold', 8.5, 100); doc.text(ttl, X(112), Y(18), { align: 'center' });
     // identitas
     doc.setLineWidth(0.5 * PT * s);
-    const field = (lbl, x1, x2, y, val) => {
+    font('normal', 8.5);
+    const lwL = Math.max(12, Math.max(doc.getTextWidth('Nama'), doc.getTextWidth('No. Peserta'), doc.getTextWidth('Kelas')) / s + 1.8);
+    const field = (lbl, x1, x2, y, val, lw) => {
       font('normal', 8.5); doc.text(lbl, X(x1), Y(y));
-      doc.line(X(x1 + 12), Y(y + 0.8), X(x2), Y(y + 0.8));
-      if (val) { fit(String(val), 'bold', 9.5, x2 - x1 - 13); doc.text(String(val), X(x1 + 13), Y(y - 0.2)); }
+      doc.line(X(x1 + lw), Y(y + 0.8), X(x2), Y(y + 0.8));
+      if (val) { fit(String(val), 'bold', 9.5, x2 - x1 - lw - 1); doc.text(String(val), X(x1 + lw + 1), Y(y - 0.2)); }
     };
-    field('Nama', 14, 120, 28, st && st.nama);
-    field('NISN', 14, 120, 35, st && st.nisn);
-    field('Kelas', 14, 62, 42, (st && st.kelas) || o.kelas);
-    field('Mapel', 66, 120, 42, (st && st.mapel) || o.mapel);
+    field('Nama', 14, 120, 28, st && st.nama, lwL);
+    field('No. Peserta', 14, 120, 35, st && st.peserta, lwL);      // diisi siswa (nomor peserta ujian)
+    field('Kelas', 14, 62, 42, (st && st.kelas) || o.kelas, lwL);
+    field('Mapel', 66, 120, 42, (st && st.mapel) || o.mapel, 12);
     // petunjuk singkat + contoh
     doc.setLineWidth(0.4 * PT * s);
     doc.roundedRect(X(124), Y(21.5), 79 * s, 27 * s, 1.5 * s, 1.5 * s, 'S');
@@ -141,7 +143,7 @@
     head(3, 'Wajib diperhatikan siswa', [37, 99, 235]);
     [
       'Gunakan pulpen hitam atau biru tua. Pensil tipis sulit terbaca (bila terpaksa pensil, pakai 2B dan tebalkan).',
-      'Tulis Nama, NISN, Kelas, dan Mapel dengan jelas di bagian atas.',
+      'Tulis Nama, No. Peserta, Kelas, dan Mapel dengan jelas di bagian atas.',
       'Satu soal hanya SATU tanda X. Isi sesuai nomor soal (nomor 1–10 di kolom pertama, 11–20 di kolom kedua, dst.).',
       'JANGAN mencoret, menulis, atau menutup 4 kotak hitam di sudut dan batang hitam kecil di kiri atas.',
       'JANGAN melipat, meremas, atau membasahi lembar jawaban. Jangan menulis di area kotak selain tanda X.'
@@ -186,7 +188,74 @@
     return doc;
   }
 
-  const LJK = { FORMATS, build, drawSheet, drawGuide, exampleBox };
+  /* ---------- Pratinjau tanpa jsPDF: "dokumen" tiruan yang menggambar ke <canvas> ----------
+     Memakai kode gambar yang sama persis (drawSheet/drawGuide) → pratinjau = hasil PDF. Jalan offline. */
+  const MM_PT = 0.3528;
+  let _mctx = null;
+  function measureCtx() { if (!_mctx) _mctx = document.createElement('canvas').getContext('2d'); return _mctx; }
+  function fontCss(style, px) { return (style === 'bold' ? 'bold ' : '') + px + 'px Helvetica, Arial, sans-serif'; }
+  function col(a) { return a.length >= 3 ? 'rgb(' + a[0] + ',' + a[1] + ',' + a[2] + ')' : 'rgb(' + a[0] + ',' + a[0] + ',' + a[0] + ')'; }
+  function CanvasDoc(opt) {
+    this.pages = []; this.st = { font: 'normal', size: 16, draw: [0], fill: [0], text: [0], lw: 0.2, dash: [] };
+    this.addPage(opt.format, opt.orientation);
+  }
+  CanvasDoc.prototype = {
+    addPage(fmt, orient) {
+      let [w, h] = fmt; if ((orient === 'landscape') !== (w > h)) [w, h] = [h, w];
+      this.cur = { w, h, ops: [] }; this.pages.push(this.cur); return this;
+    },
+    getNumberOfPages() { return this.pages.length; },
+    setProperties() { return this; },
+    setFont(_f, style) { this.st.font = style || 'normal'; return this; },
+    setFontSize(pt) { this.st.size = pt; return this; },
+    setDrawColor(...c) { this.st.draw = c; return this; },
+    setFillColor(...c) { this.st.fill = c; return this; },
+    setTextColor(...c) { this.st.text = c; return this; },
+    setLineWidth(w) { this.st.lw = w; return this; },
+    setLineDashPattern(a) { this.st.dash = (a || []).slice(); return this; },
+    getTextWidth(t) { const m = measureCtx(); m.font = fontCss(this.st.font, 100); return m.measureText(String(t)).width / 100 * this.st.size * MM_PT; },
+    splitTextToSize(txt, maxW) {
+      const out = [];
+      String(txt).split('\n').forEach(par => {
+        let line = '';
+        par.split(' ').forEach(w => { const t = line ? line + ' ' + w : w; if (line && this.getTextWidth(t) > maxW) { out.push(line); line = w; } else line = t; });
+        out.push(line);
+      });
+      return out;
+    },
+    _op(kind, a) { this.cur.ops.push({ kind, a, st: Object.assign({}, this.st, { dash: this.st.dash.slice() }) }); return this; },
+    text(t, x, y, o) { return this._op('text', [t, x, y, (o && o.align) || 'left']); },
+    line(x1, y1, x2, y2) { return this._op('line', [x1, y1, x2, y2]); },
+    rect(x, y, w, h, style) { return this._op('rect', [x, y, w, h, style]); },
+    roundedRect(x, y, w, h, rx, ry, style) { return this._op('rrect', [x, y, w, h, rx, style]); },
+    circle(x, y, r, style) { return this._op('circle', [x, y, r, style]); },
+    /** Gambar halaman ke canvas; k = piksel per mm. */
+    render(i, k) {
+      const pg = this.pages[i], cv = document.createElement('canvas');
+      cv.width = Math.round(pg.w * k); cv.height = Math.round(pg.h * k);
+      const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height);
+      c.lineCap = 'butt'; c.textBaseline = 'alphabetic';
+      pg.ops.forEach(({ kind, a, st }) => {
+        c.strokeStyle = col(st.draw); c.fillStyle = col(st.fill); c.lineWidth = Math.max(st.lw * k, 0.6);
+        c.setLineDash(st.dash.map(d => d * k));
+        const paint = (style) => { const s = style || 'S'; if (/F/.test(s)) c.fill(); if (/[SD]/.test(s)) c.stroke(); };
+        if (kind === 'line') { c.beginPath(); c.moveTo(a[0] * k, a[1] * k); c.lineTo(a[2] * k, a[3] * k); c.stroke(); }
+        else if (kind === 'rect') { c.beginPath(); c.rect(a[0] * k, a[1] * k, a[2] * k, a[3] * k); paint(a[4]); }
+        else if (kind === 'rrect') { c.beginPath(); if (c.roundRect) c.roundRect(a[0] * k, a[1] * k, a[2] * k, a[3] * k, a[4] * k); else c.rect(a[0] * k, a[1] * k, a[2] * k, a[3] * k); paint(a[5]); }
+        else if (kind === 'circle') { c.beginPath(); c.arc(a[0] * k, a[1] * k, a[2] * k, 0, Math.PI * 2); paint(a[3]); }
+        else if (kind === 'text') {
+          c.fillStyle = col(st.text); c.font = fontCss(st.font, st.size * MM_PT * k); c.textAlign = a[3];
+          const lines = Array.isArray(a[0]) ? a[0] : [String(a[0])], lh = st.size * MM_PT * 1.15 * k;
+          lines.forEach((ln, j) => c.fillText(ln, a[1] * k, a[2] * k + j * lh));
+        }
+      });
+      return cv;
+    }
+  };
+  /** Buat pratinjau (objek CanvasDoc) dengan opsi yang sama seperti build(). */
+  function preview(o) { return build(CanvasDoc, o); }
+
+  const LJK = { FORMATS, build, preview, CanvasDoc, drawSheet, drawGuide, exampleBox };
   root.LJK = LJK;
   if (typeof module !== 'undefined') module.exports = LJK;
 })(typeof window !== 'undefined' ? window : globalThis);

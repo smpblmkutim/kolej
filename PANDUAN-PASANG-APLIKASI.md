@@ -33,6 +33,7 @@ Kolej tidak perlu diunduh dari Play Store/App Store. Cukup buka alamatnya sekali
 - **Lembar jawaban:** menu **Template LJK** → pilih A4 penuh / A4 dibagi dua / F4 dibagi dua → Unduh PDF → cetak skala 100%.
 - **Ganti mapel/kelas:** tombol biru **Ganti** di kartu paling atas halaman Kunci & Scan.
 - **Izinkan kamera** saat pertama kali menekan **Mulai Scan**.
+- **Menu Scan** ada di tengah menu bawah (lingkaran biru). Tombol **back** HP menutup layar yang sedang terbuka (detail hasil, kamera, jendela).
 - **Sinyal hilang?** Tetap bisa scan. Hasil disimpan di HP dan terkirim otomatis saat sinyal kembali (lihat tulisan *"Mengirim … data"* di bawah layar). Jangan keluar akun sebelum semua terkirim.
 - **Pembaruan** berjalan otomatis. Bila muncul tulisan **Versi baru Kolej tersedia**, ketuk **Muat ulang**.
 - **Bunyi beep** tidak terdengar? Naikkan volume media HP.

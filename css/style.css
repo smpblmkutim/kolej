@@ -195,6 +195,17 @@ textarea.input { padding: 12px 14px; min-height: 96px; resize: vertical; }
 .bottomnav a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 500; position: relative; }
 .bottomnav a.on { color: var(--primary); font-weight: 700; }
 .bottomnav a.on::before { content: ""; position: absolute; top: 0; width: 32px; height: 3px; border-radius: 0 0 3px 3px; background: var(--primary); }
+.bottomnav a.nav-scan { color: var(--text); justify-content: flex-end; padding-bottom: 7px; overflow: visible; }
+.bottomnav a.nav-scan::before { display: none; }
+.bottomnav a.nav-scan .fab {
+  position: absolute; top: -22px; left: 50%; transform: translateX(-50%); width: 60px; height: 60px; border-radius: 50%;
+  display: grid; place-items: center; color: #fff; background: var(--primary);
+  border: 4px solid var(--surface); box-shadow: 0 6px 18px color-mix(in srgb, var(--primary) 45%, transparent); transition: transform .15s;
+}
+.bottomnav a.nav-scan .fab svg { width: 28px; height: 28px; }
+.bottomnav a.nav-scan:active .fab { transform: translateX(-50%) scale(.94); }
+.bottomnav a.nav-scan.on { color: var(--primary); font-weight: 700; }
+.bottomnav a.nav-scan.on .fab { background: color-mix(in srgb, var(--primary) 85%, #000); }
 .bottomnav .badge-dot { position: absolute; top: 9px; margin-left: 22px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 99px; background: var(--warn); color: #000; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
 .netbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 10px + var(--safe-b)); z-index: 45; }
 @media (min-width: 1024px) {
@@ -389,6 +400,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 @media (max-width: 380px) { .ctx-btn span { display: none; } .ctx-btn { width: 48px; padding: 0; } }
 /* ---------- Template LJK ---------- */
 .tplf.on { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
+.tpl-prev { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x mandatory; background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.tpl-pg { flex: none; position: relative; border: 0; padding: 0; background: none; cursor: zoom-in; scroll-snap-align: start; }
+.tpl-pg canvas { display: block; height: 260px; width: auto; border-radius: 4px; box-shadow: 0 2px 10px rgba(15,23,42,.18); background: #fff; }
+.tpl-pg .no { position: absolute; right: 6px; bottom: 6px; background: rgba(15,23,42,.75); color: #fff; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 99px; }
+@media (min-width: 1024px) { .tpl-pg canvas { height: 320px; } }
 .tpl-paper { width: 100%; max-width: 92px; margin: 0 auto; background: #fff; border: 1px solid #CBD5E1; border-radius: 4px; display: flex; flex-direction: column; padding: 4px; gap: 3px; }
 .tpl-half { flex: 1; position: relative; border-radius: 2px; background: repeating-linear-gradient(0deg, transparent 0 5px, #E2E8F0 5px 6px); margin: 2px; }
 .tpl-half i { position: absolute; width: 6px; height: 6px; background: #0F172A; }

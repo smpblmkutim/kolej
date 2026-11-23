@@ -139,7 +139,7 @@ function masterPage(kind) {
         const items = cfg.list().sort((a, b) => a.nama.localeCompare(b.nama, 'id', { numeric: true }));
         el.innerHTML = `<div class="page-h"><div class="grow"><h1>${cfg.title}</h1><p class="muted">Data dinonaktifkan, bukan dihapus, agar riwayat hasil tetap utuh.</p></div><button class="btn btn-primary" id="m-add">${ic('plus')} <span class="hide-mob">Tambah</span></button></div>
           <div class="list">${items.map(x => {
-            const extra = kind === 'kelas' ? ` · Tingkat ${esc(x.tingkat || '-')} · ${(AppState.maps.siswaByKelas[x.id] || []).length} siswa aktif` : '';
+            const extra = kind === 'kelas' ? ` · Tingkat ${esc(x.tingkat || '-')}${jenjang(x.tingkat) ? ' ' + jenjang(x.tingkat) : ''} · ${(AppState.maps.siswaByKelas[x.id] || []).length} siswa aktif` : '';
             const kk = kind === 'mapel' ? `<span class="chip ${x.kkm === '' ? 'out' : 'a'} tnum" title="KKM">KKM ${kkmOf(x.id)}${x.kkm === '' ? ' (bawaan)' : ''}</span>` : '';
             return `<div class="li" style="cursor:default"><span class="stat" style="padding:8px;margin:0;border:0;background:var(--primary-soft);color:var(--primary)">${ic(cfg.icon)}</span><div class="grow"><div class="nm">${kind === 'kelas' ? 'Kelas ' : ''}${esc(x.nama)}</div><div class="sub mono">${esc(x.id)}${extra}</div></div>${kk}<span class="hide-mob">${statusChip(x.status)}</span><button class="btn-icon" data-e="${esc(x.id)}" aria-label="Ubah">${ic('pencil')}</button><button class="btn-icon" data-d="${esc(x.id)}" aria-label="Hapus" style="color:var(--bad)">${ic('trash-2')}</button></div>`;
           }).join('') || `<div class="empty">${ic(cfg.icon)}<p>Belum ada data.</p></div>`}</div>`;
@@ -156,12 +156,13 @@ function masterPage(kind) {
       const edit = x => {
         const L = formLayer(x ? 'Ubah ' + cfg.title.replace('Data ', '') : 'Tambah ' + cfg.title.replace('Data ', ''),
           fieldHtml(cfg.label, `<input class="input" name="nama" value="${esc(x ? x.nama : '')}" placeholder="${cfg.ph}">`) +
-          (kind === 'kelas' ? fieldHtml('Tingkat', `<select class="input" name="tingkat">${['7', '8', '9'].map(t => `<option ${x && x.tingkat === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`) : '') +
+          (kind === 'kelas' ? fieldHtml('Tingkat', `<select class="input" name="tingkat">${tingkatOptions(x ? (x.tingkat || tingkatDari(x.nama)) : '7')}</select>`) : '') +
           (kind === 'mapel' ? fieldHtml('KKM (0–100)', `<input class="input tnum" name="kkm" inputmode="numeric" value="${esc(x ? x.kkm : '')}" placeholder="Kosong = KKM bawaan (${kkmDefault()})">`) + '<p class="muted small" style="margin:-6px 0 12px">Guru mapel juga bisa mengatur KKM dari halaman Kunci Jawaban.</p>' : '') +
           (x ? fieldHtml('Status', segField('status', x.status, ['Aktif', 'Nonaktif'])) : ''),
           async fd => { const res = await api(cfg.action, Object.assign({ id: x && x.id }, fd)); if (!res.success) return res.message; await adminRefresh(); L.close(); toast(res.message); draw(); },
           x ? { delLabel: 'Hapus ' + (kind === 'mapel' ? 'mapel' : 'kelas'), onDelete: () => del(x) } : {});
         bindSeg(L.el);
+        if (kind === 'kelas') { const nm = $('[name=nama]', L.el), tk = $('[name=tingkat]', L.el); nm.addEventListener('input', () => { const t = tingkatDari(nm.value); if (t) tk.value = t; }); }
       };
       draw();
     }
