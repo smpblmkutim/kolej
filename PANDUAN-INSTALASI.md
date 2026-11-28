@@ -1,6 +1,6 @@
 # Panduan Instalasi Kolej — Koreksi Lembar Jawaban
 
-SMP Budi Luhur Mandiri · versi 1.4.0
+SMP Budi Luhur Mandiri · versi 1.5.0
 
 Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 
@@ -10,6 +10,35 @@ Kolej terdiri dari **dua bagian** yang dipasang terpisah:
 | **Frontend** | isi ZIP `kolej-frontend.zip` | GitHub Pages (HTTPS, wajib untuk kamera) |
 
 Urutannya: **backend dulu** (untuk mendapat URL `/exec`), lalu isi URL itu ke frontend, lalu unggah frontend.
+
+---
+
+## Yang baru di versi 1.5.0 — simpan instan
+
+Semua tombol **Simpan** kini terasa seketika: perubahan langsung tampil di HP, lalu dikirim ke server di latar belakang. Selama pengiriman, di bawah layar muncul tanda kecil **"Mengirim N data…"**.
+
+| Simpan | Sebelum (1.4) | Sekarang (1.5) |
+|---|---|---|
+| Tambah/ubah guru, mapel, kelas, siswa, reset password, tugas mengajar | ±3,8 dtk (2 panggilan server) | **±0,05 dtk** |
+| Kunci jawaban, KKM, pengaturan, koreksi manual, hapus hasil | ±2,0–2,3 dtk | **±0,05 dtk** |
+| Total panggilan server untuk 10 simpanan berturut-turut | 19 | **10** |
+
+*Diukur di simulator dengan jeda jaringan ±1,3 dtk per panggilan, mirip Apps Script sungguhan.*
+
+Cara kerjanya:
+- **Satu panggilan, bukan dua.** Server mengirim data terbaru bersama jawaban simpan, jadi aplikasi tidak perlu memanggil server lagi untuk menyegarkan data.
+- **Digabung.** Beberapa simpanan yang menumpuk (mis. saat sinyal lemah/offline, atau banyak hasil scan sekaligus) dikirim dalam **satu panggilan**.
+- **Aman.** Antrean tersimpan di HP. Bila aplikasi ditutup atau sinyal hilang, pengiriman dilanjutkan saat aplikasi dibuka lagi/online. Tidak ada data dobel walau terkirim ulang.
+- **Bila ditolak server** (mis. kelas yang dipilih sudah dihapus admin lain), muncul pesan **"Gagal menyimpan: … Perubahan dibatalkan."** dan data di HP otomatis dikembalikan sesuai server.
+- **Server lebih ringan.** Menyimpan hasil scan/koreksi hanya membaca kolom kunci di sheet Hasil, dan versi cache dibaca sekaligus.
+- Tetap **menunggu server** (dengan spinner) untuk tindakan yang perlu diperiksa dulu: **hapus data**, **impor Excel**, **ganti password**, dan **ganti ujian aktif**. Semuanya kini cukup 1 panggilan.
+
+**Memperbarui dari 1.4.x — urutan penting: backend dulu.**
+1. **Backend:** tempel `Kode.gs` baru → Simpan → **Terapkan → Kelola deployment → ✏️ Edit → Versi baru → Terapkan**. Tidak perlu `setupKolej` lagi; tidak ada sheet/kolom yang berubah.
+2. **Frontend:** ganti isi repo dengan ZIP baru (isi ulang `GAS_URL`) → `git add .` → `git commit -m "Kolej 1.5.0"` → `git push`.
+3. Di HP ketuk **Muat ulang** saat banner versi baru muncul → **Akun** menunjukkan **v1.5.0**.
+
+Bila frontend terlanjur diperbarui sebelum backend, aplikasi tetap berjalan dengan cara lama (menunggu server) sampai backend diperbarui. Setelah itu simpan instan aktif otomatis.
 
 ---
 
@@ -244,7 +273,8 @@ Tempel kode baru → Simpan → **Terapkan → Kelola deployment → ✏️ Edit
 | Scan | Gambar dibaca di HP (±0,2–0,8 dtk), hanya string jawaban + foto kecil yang dikirim | Hasil tampil tanpa menunggu internet |
 | Aplikasi terpasang (PWA) | Tampilan disimpan service worker; terbuka instan & tetap terbuka tanpa sinyal | Uji Chrome: syarat instal lolos, muat ulang offline tetap tampil, banner versi baru muncul |
 | Sinyal putus | Hasil masuk **antrean HP** dan terkirim otomatis saat online; aman di-retry tanpa data ganda | — |
-| Simpan / unduh | Tombol menampilkan animasi loading selama proses | — |
+| Simpan (v1.5) | Perubahan langsung diterapkan di HP, dikirim di latar; data terbaru ikut di jawaban server; simpanan menumpuk digabung 1 panggilan | ±0,05 dtk dirasakan (sebelumnya 2–3,8 dtk) |
+| Hapus / impor / unduh | Tombol menampilkan animasi loading selama proses | 1 panggilan |
 | Server | Cache berversi (data besar dipecah), log ditulis berkelompok tiap 5 menit, token sesi tanpa penyimpanan | Baca ulang data 1.500 siswa: 0 kali baca Sheets |
 
 Cek kecepatan nyata di HP: menu **Akun → Kecepatan**.
@@ -259,6 +289,8 @@ Di editor Apps Script, jalankan **`cekPerforma`** untuk melihat ukuran penyimpan
 | Gejala | Penyebab | Solusi |
 |---|---|---|
 | Layar "URL server belum diisi" | `js/config.js` belum diisi | Isi `GAS_URL`, push ulang |
+| Tanda "Mengirim N data…" tidak hilang | Sinyal lemah / server sibuk | Biarkan; dicoba ulang otomatis tiap 30 dtk & saat online. Data aman di HP. |
+| "Gagal menyimpan: … Perubahan dibatalkan." | Server menolak (mis. data sudah dihapus admin lain) | Data di HP sudah dikembalikan sesuai server; ulangi dengan data yang benar |
 | "Server membalas tidak terduga" | URL salah / bukan `/exec` / akses bukan *Siapa saja* | Cek ulang langkah A3 |
 | Situs 404 di GitHub Pages | Yang di-push folder induk, bukan isi `kolej-frontend` | Di repo GitHub, `index.html` harus terlihat di halaman depan |
 | Tampilan tanpa warna/berantakan | Upload lewat web GitHub, folder `css/` `js/` hilang | Ulangi lewat terminal (B3) |

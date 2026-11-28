@@ -4,8 +4,9 @@
    ========================================================================== */
 'use strict';
 
-/** Ambil boot terbaru setelah admin mengubah data master. */
-async function adminRefresh() {
+/** Ambil boot terbaru setelah admin mengubah data master (v1.5: pakai data yang ikut di jawaban simpan bila ada). */
+async function adminRefresh(prev) {
+  if (prev && prev.boot) { AppState.boot = prev.boot; saveBootLocal(); buildMaps(); return prev; }
   const res = await api('boot');
   if (res.success) { AppState.boot = res.data; saveBootLocal(); buildMaps(); }
   return res;
@@ -71,16 +72,27 @@ registerPage('guru', {
         `<div id="un-wrap">${fieldHtml('Username (khusus Admin)', `<input class="input" name="username" autocapitalize="off" value="${esc(u ? u.username : '')}">`)}</div>` +
         (u ? fieldHtml('Status', segField('status', u.status, ['Aktif', 'Nonaktif'])) : fieldHtml('Password awal', `<input class="input" name="password" type="text" value="${esc(Math.random().toString(36).slice(2, 8))}">`) + '<p class="muted small" style="margin:-6px 0 12px">Catat & berikan ke guru. Wajib diganti saat login pertama.</p>'),
         async fd => {
-          const res = await api('userSave', Object.assign({ id: u && u.id }, fd));
-          if (!res.success) return res.message;
-          await adminRefresh(); L.close(); toast(res.message); draw();
-          if (!u && fd.peran !== 'Admin') { const nu = AppState.boot.users.find(x => x.id === res.data.id); if (nu) ajarSheet(nu, draw); }
+          // cek di HP (sama dengan server) → simpan instan, kirim di latar
+          if (!fd.nama) return 'Nama wajib diisi.';
+          const un = (fd.username || '').toLowerCase();
+          if (fd.peran === 'Admin' && !un) return 'Username wajib untuk Admin.';
+          if (un && AppState.boot.users.some(x => (x.username || '').toLowerCase() === un && x.id !== (u && u.id))) return 'Username sudah dipakai.';
+          if (!u && String(fd.password || '').length < 6) return 'Password awal minimal 6 karakter.';
+          if (u && u.id === AppState.me.id && fd.status === 'Nonaktif') return 'Anda tidak dapat menonaktifkan akun sendiri.';
+          const id = u ? u.id : cid(fd.peran === 'Admin' ? 'A' : 'G');
+          const er = await saveFast('userSave', Object.assign({ id: u && u.id, newId: u ? undefined : id }, fd), b => {
+            upsertBy(b.users, x => x.id === id, { id, nama: fd.nama, peran: fd.peran, username: un, status: u ? (fd.status || u.status) : 'Aktif', wajibGanti: u ? u.wajibGanti : true });
+            b.guruNama[id] = fd.nama;
+          });
+          if (er) return er;
+          L.close(); toast(u ? 'Data pengguna tersimpan.' : 'Pengguna ditambahkan. Password awal wajib diganti saat login pertama.'); draw();
+          if (!u && fd.peran !== 'Admin') { const nu = AppState.boot.users.find(x => x.id === id) || AppState.boot.users.filter(x => x.nama === fd.nama).pop(); if (nu) ajarSheet(nu, draw); }
         }, u && u.id !== AppState.me.id ? {
           delLabel: 'Hapus pengguna',
           onDelete: async () => {
             const r = await deleteFlow({ title: 'Hapus ' + u.nama + '?', text: 'Akun ini dihapus permanen dan tidak bisa login lagi.', action: 'userDelete', data: { id: u.id },
-              onDeactivate: async () => { const x = await api('userSave', { id: u.id, nama: u.nama, peran: u.peran, username: u.username, status: 'Nonaktif' }); toast(x.success ? 'Akun dinonaktifkan.' : x.message, x.success ? 'ok' : 'bad'); await adminRefresh(); draw(); } });
-            if (r) { await adminRefresh(); draw(); }
+              onDeactivate: async () => { const er = await saveFast('userSave', { id: u.id, nama: u.nama, peran: u.peran, username: u.username, status: 'Nonaktif' }, b => { const x = b.users.find(y => y.id === u.id); if (x) x.status = 'Nonaktif'; }); toast(er || 'Akun dinonaktifkan.', er ? 'bad' : 'ok'); draw(); } });
+            if (r) { await adminRefresh(r); draw(); }
           }
         } : {});
       bindSeg(L.el);
@@ -89,7 +101,12 @@ registerPage('guru', {
     };
     const reset = u => {
       const L = formLayer('Reset Password', fieldHtml('Password baru untuk ' + u.nama, `<input class="input" name="password" type="text" value="${esc(Math.random().toString(36).slice(2, 8))}">`) + '<p class="muted small" style="margin:-6px 0 12px">Sesi lama pengguna ini otomatis keluar. Ia wajib mengganti password saat login berikutnya.</p>',
-        async fd => { const res = await api('resetPassword', { id: u.id, password: fd.password }); if (!res.success) return res.message; await adminRefresh(); L.close(); toast(res.message); draw(); }, { ok: 'Reset Password' });
+        async fd => {
+          if (String(fd.password || '').length < 6) return 'Password minimal 6 karakter.';
+          const er = await saveFast('resetPassword', { id: u.id, password: fd.password }, b => { const x = b.users.find(y => y.id === u.id); if (x) x.wajibGanti = true; });
+          if (er) return er;
+          L.close(); toast('Password ' + u.nama + ' direset. Wajib diganti saat login.'); draw();
+        }, { ok: 'Reset Password' });
     };
     draw();
   }
@@ -120,9 +137,10 @@ function ajarSheet(u, onDone) {
     $$('[data-none]', L.el).forEach(b => b.onclick = () => { kel.forEach(k => sel.delete(b.dataset.none + '|' + k.id)); draw(); });
   };
   $('#aj-save', L.el).onclick = e => withBtn(e.currentTarget, async () => {
-    const res = await api('pengajarSave', { guru: u.id, pairs: [...sel].map(x => x.split('|')) });
-    if (!res.success) return toast(res.message, 'bad');
-    await adminRefresh(); L.close(); toast(res.message); onDone && onDone();
+    const pairs = [...sel].map(x => x.split('|')).filter(([m, k]) => AppState.maps.mapel.has(m) && AppState.maps.kelas.has(k));
+    const er = await saveFast('pengajarSave', { guru: u.id, pairs }, b => { b.pengajar = (b.pengajar || []).filter(p => p[0] !== u.id).concat(pairs.map(([m, k]) => [u.id, m, k])); });
+    if (er) return toast(er, 'bad');
+    L.close(); toast('Penugasan ' + u.nama + ' tersimpan (' + pairs.length + ' mapel·kelas).'); onDone && onDone();
   });
   draw();
 }
@@ -150,8 +168,8 @@ function masterPage(kind) {
       const del = async x => {
         const nm = (kind === 'kelas' ? 'Kelas ' : '') + x.nama;
         const r = await deleteFlow({ title: 'Hapus ' + nm + '?', text: nm + ' dihapus permanen dari data master.', action: cfg.del, data: { id: x.id },
-          onDeactivate: async () => { const y = await api(cfg.action, { id: x.id, nama: x.nama, tingkat: x.tingkat, kkm: x.kkm, status: 'Nonaktif' }); toast(y.success ? nm + ' dinonaktifkan.' : y.message, y.success ? 'ok' : 'bad'); await adminRefresh(); draw(); } });
-        if (r) { await adminRefresh(); draw(); }
+          onDeactivate: async () => { const er = await saveFast(cfg.action, { id: x.id, nama: x.nama, tingkat: x.tingkat, kkm: x.kkm, status: 'Nonaktif' }, b => { const row = b[kind].find(y => y[0] === x.id); if (row) row[kind === 'mapel' ? 2 : 3] = 'Nonaktif'; }); toast(er || nm + ' dinonaktifkan.', er ? 'bad' : 'ok'); draw(); } });
+        if (r) { await adminRefresh(r); draw(); }
       };
       const edit = x => {
         const L = formLayer(x ? 'Ubah ' + cfg.title.replace('Data ', '') : 'Tambah ' + cfg.title.replace('Data ', ''),
@@ -159,7 +177,20 @@ function masterPage(kind) {
           (kind === 'kelas' ? fieldHtml('Tingkat', `<select class="input" name="tingkat">${tingkatOptions(x ? (x.tingkat || tingkatDari(x.nama)) : '7')}</select>`) : '') +
           (kind === 'mapel' ? fieldHtml('KKM (0–100)', `<input class="input tnum" name="kkm" inputmode="numeric" value="${esc(x ? x.kkm : '')}" placeholder="Kosong = KKM bawaan (${kkmDefault()})">`) + '<p class="muted small" style="margin:-6px 0 12px">Guru mapel juga bisa mengatur KKM dari halaman Kunci Jawaban.</p>' : '') +
           (x ? fieldHtml('Status', segField('status', x.status, ['Aktif', 'Nonaktif'])) : ''),
-          async fd => { const res = await api(cfg.action, Object.assign({ id: x && x.id }, fd)); if (!res.success) return res.message; await adminRefresh(); L.close(); toast(res.message); draw(); },
+          async fd => {
+            const nama = kind === 'kelas' ? fd.nama.toUpperCase() : fd.nama;
+            if (!nama) return (kind === 'mapel' ? 'Nama mapel' : 'Nama kelas') + ' wajib diisi.';
+            if (cfg.list().some(y => y.nama.toUpperCase() === nama.toUpperCase() && y.id !== (x && x.id))) return (kind === 'mapel' ? 'Mapel "' : 'Kelas "') + nama + '" sudah ada.';
+            let kkm = '';
+            if (kind === 'mapel' && String(fd.kkm || '').trim() !== '') { kkm = Number(String(fd.kkm).replace(',', '.')); if (!(kkm >= 0 && kkm <= 100)) return 'KKM harus angka 0–100 (atau kosong = KKM bawaan).'; }
+            const id = x ? x.id : cid(kind === 'mapel' ? 'M' : 'K'), st = fd.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif';
+            const er = await saveFast(cfg.action, Object.assign({ id: x && x.id, newId: x ? undefined : id }, fd), b => {
+              const row = kind === 'mapel' ? [id, nama, st, kkm === '' ? '' : String(kkm)] : [id, nama, fd.tingkat || tingkatDari(nama), st];
+              upsertBy(b[kind], y => y[0] === id, row);
+            });
+            if (er) return er;
+            L.close(); toast(kind === 'mapel' ? 'Mapel tersimpan.' : 'Kelas tersimpan.'); draw();
+          },
           x ? { delLabel: 'Hapus ' + (kind === 'mapel' ? 'mapel' : 'kelas'), onDelete: () => del(x) } : {});
         bindSeg(L.el);
         if (kind === 'kelas') { const nm = $('[name=nama]', L.el), tk = $('[name=tingkat]', L.el); nm.addEventListener('input', () => { const t = tingkatDari(nm.value); if (t) tk.value = t; }); }
@@ -208,7 +239,7 @@ registerPage('siswa', {
       const sd = $('#s-del', el); if (sd) sd.onclick = async () => {
         const ids = [...sel];
         const r = await deleteFlow({ title: 'Hapus ' + ids.length + ' siswa?', text: 'Data siswa terpilih dihapus permanen. Untuk siswa lulus/pindah, Anda juga bisa memilih Nonaktif lewat tombol ubah.', action: 'siswaDelete', data: { ids } });
-        if (r) { sel = null; await adminRefresh(); draw(); }
+        if (r) { sel = null; await adminRefresh(r); draw(); }
       };
       $('#s-tpl', el).onclick = e => withBtn(e.currentTarget, downloadSiswaTemplate);
       $('#s-imp', el).onclick = () => importSiswa(draw);
@@ -222,12 +253,16 @@ registerPage('siswa', {
         async fd => {
           if (!/^\d+$/.test(fd.nisn)) return 'NISN hanya boleh angka.';
           if (fd.nisn.length !== 10 && !(await confirmDlg({ title: 'NISN bukan 10 digit', text: 'NISN "' + fd.nisn + '" berisi ' + fd.nisn.length + ' digit. Tetap simpan?', ok: 'Tetap simpan' }))) return;
-          const res = await api('siswaSave', Object.assign({ oldNisn: s && s.nisn }, fd));
-          if (!res.success) return res.message;
-          await adminRefresh(); L.close(); toast(res.message); draw();
+          if (!fd.nama) return 'Nama siswa wajib diisi.';
+          if (!AppState.maps.kelas.has(fd.kelas)) return 'Kelas tidak ditemukan.';
+          if (s && s.nisn !== fd.nisn && AppState.maps.siswa.has(fd.nisn)) return 'NISN ' + fd.nisn + ' sudah dipakai siswa lain.';
+          const key = s ? s.nisn : fd.nisn;
+          const er = await saveFast('siswaSave', Object.assign({ oldNisn: s && s.nisn }, fd), b => upsertBy(b.siswa, y => y[0] === key, [fd.nisn, fd.nama, fd.kelas, fd.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif']));
+          if (er) return er;
+          L.close(); toast('Data siswa tersimpan.'); draw();
         }, s ? { delLabel: 'Hapus siswa', onDelete: async () => {
           const r = await deleteFlow({ title: 'Hapus ' + s.nama + '?', text: 'Data siswa dihapus permanen. Bila siswa pindah/lulus, Anda bisa memilih status Nonaktif saja.', action: 'siswaDelete', data: { ids: [s.nisn] } });
-          if (r) { await adminRefresh(); draw(); }
+          if (r) { await adminRefresh(r); draw(); }
         } } : {});
       bindSeg(L.el);
     };
@@ -303,9 +338,10 @@ function importSiswa(onDone) {
     $('#im-back', L.el).onclick = () => L.close();
     $('#im-save', L.el).onclick = e => withBtn(e.currentTarget, async () => {
       const send = ok.map(r => ({ line: r.line, nisn: r.nisn, nama: r.nama, kelas: kel[r.kelas.toUpperCase()].id }));
-      const res = await api('siswaImport', { rows: send }, { timeout: 120000 });
+      await Outbox.drain();
+      const res = await api('siswaImport', { rows: send }, { timeout: 120000, boot: true });
       if (!res.success) return toast(res.message, 'bad', 5000);
-      await adminRefresh();
+      await adminRefresh(res);
       steps(3);
       $('#im-body', L.el).innerHTML = `<div class="empty">${ic('circle-check')}<h3>Impor selesai</h3><p><b>${res.data.baru}</b> siswa baru · <b>${res.data.diperbarui}</b> diperbarui${res.data.errors.length ? ' · ' + res.data.errors.length + ' ditolak server' : ''}</p></div>
         ${res.data.errors.length ? tableHtml(['Baris', 'Kesalahan'], res.data.errors.map(x => [x.line, x.msg])) : ''}<button class="btn btn-primary btn-block" data-close style="margin-top:12px">Selesai</button>`;
@@ -371,10 +407,16 @@ registerPage('pengaturan', {
         if (!S.nama_sekolah || !S.ujian_aktif) return toast('Nama sekolah & ujian aktif wajib diisi.', 'warn');
         if (!(Number(S.kkm) >= 0 && Number(S.kkm) <= 100)) return toast('KKM harus 0–100.', 'warn');
         if (S.ujian_aktif !== s.ujian_aktif && !(await confirmDlg({ title: 'Ganti ujian aktif?', html: `Dari <b>${esc(s.ujian_aktif)}</b> ke <b>${esc(S.ujian_aktif)}</b>. Guru perlu mengisi kunci jawaban baru untuk ujian ini. Hasil lama tetap aman sebagai arsip.`, ok: 'Ya, ganti' }))) return;
-        const res = await api('settingsSave', { nama_sekolah: S.nama_sekolah, ujian_aktif: S.ujian_aktif, kkm: S.kkm, simpan_foto: S.simpan_foto, sensitivitas: S.sensitivitas, warna_utama: S.warna_utama, warna_aksen: S.warna_aksen, tema_bawaan: S.tema_bawaan });
-        if (!res.success) return toast(res.message, 'bad');
-        Object.assign(AppState.boot.settings, res.data.settings); saveBootLocal();
-        Store.del('pub'); toast(res.message); startApp();
+        const data = { nama_sekolah: S.nama_sekolah, ujian_aktif: S.ujian_aktif, kkm: S.kkm, simpan_foto: S.simpan_foto, sensitivitas: S.sensitivitas, warna_utama: S.warna_utama, warna_aksen: S.warna_aksen, tema_bawaan: S.tema_bawaan };
+        if (S.ujian_aktif !== s.ujian_aktif) {                 // ganti ujian aktif: daftar kunci & hasil berubah → tunggu server (1 panggilan, data ikut)
+          const res = await api('settingsSave', data, { boot: true });
+          if (!res.success) return toast(res.message, 'bad');
+          if (res.boot) { AppState.boot = res.boot; saveBootLocal(); } else Object.assign(AppState.boot.settings, res.data.settings), saveBootLocal();
+          Store.del('pub'); toast(res.message); startApp(); return;
+        }
+        const er = await saveFast('settingsSave', data, b => Object.assign(b.settings, data));
+        if (er) return toast(er, 'bad');
+        Store.del('pub'); toast('Pengaturan tersimpan dan langsung berlaku.'); startApp();
       });
     };
     const preview = () => {

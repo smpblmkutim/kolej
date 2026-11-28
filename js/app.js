@@ -61,6 +61,41 @@ function progressOf(sesi, kelas) {
   return { done, total: list.length, belum: list.filter(s => !h[s.nisn]), pct: list.length ? Math.round(done / list.length * 100) : 0 };
 }
 function saveBootLocal() { Store.set(userKey('boot'), { t: Date.now(), h: '', data: AppState.boot }); }
+
+/* ---------------- v1.5 Simpan instan ----------------
+   Perubahan langsung diterapkan di HP (form tertutup seketika), lalu dikirim di latar lewat antrean.
+   Server mengembalikan data terbaru di jawaban yang sama; bila ditolak, perubahan dibatalkan otomatis. */
+const cid = prefix => prefix + uuid().replace(/-/g, '').slice(0, 8).toUpperCase();      // ID dari HP (format sama dgn server)
+/** Kembalikan '' bila berhasil, atau pesan galat (hanya mungkin di jalur server lama). */
+async function saveFast(action, data, apply) {
+  if (!serverFast()) {                                   // server belum v1.5 → cara lama: tunggu server, lalu ambil data
+    const res = await api(action, data);
+    if (!res.success) return res.message || 'Gagal menyimpan.';
+    const b = await api('boot'); if (b.success) { AppState.boot = b.data; saveBootLocal(); buildMaps(); }
+    return '';
+  }
+  try { if (apply) apply(AppState.boot); } catch (e) { console.error(e); }
+  saveBootLocal(); buildMaps();
+  await Outbox.add(action, data, null, { master: true });
+  return '';
+}
+/** Server sudah mendukung simpan instan (v1.5+)? Versi server tercatat dari setiap jawaban. */
+function serverFast() { const v = AppState.serverV || Store.get('serverV', ''); const [a, b] = String(v).split('.').map(Number); return a > 1 || (a === 1 && b >= 5); }
+function upsertBy(arr, match, row) { const i = arr.findIndex(match); if (i > -1) arr[i] = row; else arr.push(row); }
+/** Terapkan data boot dari server — hanya bila tak ada simpanan yang masih menunggu (agar perubahan HP tak "berkedip"). */
+function applyServerBoot(b) {
+  if (!b || Outbox.pendingMaster) return;
+  const before = JSON.stringify(AppState.boot);
+  AppState.boot = b; AppState.me = Object.assign(AppState.me || {}, { nama: b.me.nama });
+  saveBootLocal(); buildMaps();
+  applyBrand(b.settings.warna_utama, b.settings.warna_aksen);
+  if (JSON.stringify(b) !== before && !$('.scanner') && !$('.fullpage') && !$('.layer')) route(true);
+}
+document.addEventListener('kolej:boot', e => applyServerBoot(e.detail));
+document.addEventListener('outbox:fail', e => {
+  const a = e.detail.item.action;
+  if (/^hasil|^sesi/.test(a)) Object.keys(localStorage).filter(k => k.indexOf(LS_PREFIX + userKey('hasil:')) === 0).forEach(k => localStorage.removeItem(k));
+});
 Outbox.on(items => {
   AppState.pending = items;
   const before = JSON.stringify(Object.keys(AppState.maps.hasil || {}).length);
@@ -76,6 +111,7 @@ document.addEventListener('outbox:done', e => {
     saveBootLocal(); buildMaps();
     Store.del(userKey('hasil:' + ujianAktif()));        // daftar hasil diambil segar saat dibuka
   }
+  if (item.action === 'sesiSave' && res.data && res.data.recalced) Store.del(userKey('hasil:' + ujianAktif()));   // nilai dihitung ulang server
 });
 
 /* ---------------- Sesi login ---------------- */
@@ -163,10 +199,11 @@ window.addEventListener('pwa:installed', () => toast('Kolej berhasil dipasang. B
  */
 async function deleteFlow(o) {
   if (!(await confirmDlg({ title: o.title, text: o.text, ok: 'Hapus', danger: true, icon: 'trash-2' }))) return null;
-  let res = await api(o.action, o.data);
+  await Outbox.drain();                                   // simpanan sebelumnya terkirim dulu
+  let res = await api(o.action, o.data, { boot: true });
   if (!res.success && res.data && res.data.code === 'HAS_RESULTS') {
     if (!(await confirmDlg({ title: 'Hapus juga ' + res.data.hasil + ' hasil scan?', text: res.message + ' Tindakan ini tidak bisa dibatalkan.', ok: 'Ya, hapus semuanya', danger: true, icon: 'triangle-alert' }))) return null;
-    res = await api(o.action, Object.assign({}, o.data, { force: true }));
+    res = await api(o.action, Object.assign({}, o.data, { force: true }), { boot: true });
   }
   if (!res.success) {
     if (res.data && res.data.code === 'IN_USE' && o.onDeactivate) {
@@ -301,7 +338,7 @@ function startApp() {
   renderNet(); Outbox.emit(); Outbox.flush();
   // segarkan boot di latar (SWR); render ulang hanya bila data berubah
   swr('boot', 'boot', {}, (data, fromCache) => {
-    if (fromCache) return;
+    if (fromCache || Outbox.pendingMaster) return;          // simpanan di HP belum terkirim → jangan ditimpa data lama
     AppState.boot = data; AppState.me = Object.assign(AppState.me, { nama: data.me.nama }); buildMaps();
     applyBrand(data.settings.warna_utama, data.settings.warna_aksen);
     if (!$('.scanner') && !$('.fullpage') && !$('.layer')) route(true);
@@ -312,12 +349,12 @@ function startApp() {
 let _bootBusy = false;
 function refreshBoot(ms) {
   const c = Store.get(userKey('boot'), null);
-  if (_bootBusy || (c && Date.now() - c.t < ms)) return;
+  if (_bootBusy || Outbox.pendingMaster || (c && Date.now() - c.t < ms)) return;
   _bootBusy = true;
   const before = JSON.stringify([AppState.boot.sesi, AppState.boot.ajar, AppState.boot.mapel]);
   api('boot').then(res => {
     _bootBusy = false;
-    if (!res.success) return;
+    if (!res.success || Outbox.pendingMaster) return;
     AppState.boot = res.data; Store.set(userKey('boot'), { t: Date.now(), h: '', data: res.data }); buildMaps();
     if (JSON.stringify([res.data.sesi, res.data.ajar, res.data.mapel]) !== before && !$('.scanner') && !$('.fullpage') && !$('.layer')) route(true);
   });
@@ -533,10 +570,10 @@ registerPage('kunci', {
       $('#k-kkm-save', el).onclick = e => withBtn(e.currentTarget, async () => {
         const v = $('#k-kkm', el).value.trim();
         if (!(Number(v) >= 0 && Number(v) <= 100) || v === '') return toast('KKM harus angka 0–100.', 'warn');
-        const res = await api('mapelKkm', { id: c.mapel, kkm: v });
-        if (!res.success) return toast(res.message, 'bad');
-        const row = AppState.boot.mapel.find(x => x[0] === c.mapel); if (row) row[3] = String(res.data.kkm);
-        saveBootLocal(); buildMaps(); Store.del(userKey('hasil:' + ujianAktif())); toast(res.message); draw();
+        const kv = String(Number(v.replace(',', '.')));
+        const er = await saveFast('mapelKkm', { id: c.mapel, kkm: v }, b => { const row = b.mapel.find(x => x[0] === c.mapel); if (row) row[3] = kv; });
+        if (er) return toast(er, 'bad');
+        toast('KKM ' + mapelNama(c.mapel) + ' diatur ' + kv + '.'); draw();
       });
       $('#k-copy', el).onclick = copyFrom;
       $('#k-save', el).onclick = e => save(e.currentTarget);
@@ -604,13 +641,17 @@ registerPage('kunci', {
         payload.recalc = pick === '1';
       }
       await withBtn(btn, async () => {
-        const res = await api('sesiSave', payload);
-        if (!res.success) return toast(res.message, 'bad', 4000);
-        const s = res.data.sesi, list = AppState.boot.sesi, i = list.findIndex(x => x.id === s.id);
-        if (i > -1) list[i] = s; else list.push(s);
-        Store.del(dkey); saveBootLocal(); buildMaps();
-        toast(res.message);
-        if (res.data.recalced) { Store.del(userKey('hasil:' + ujianAktif())); swr('boot', 'boot', {}, d => { AppState.boot = d; buildMaps(); }, { force: true }); }
+        // v1.5: simpan instan — kunci langsung berlaku di HP, dikirim ke server di latar
+        const id = sesi ? sesi.id : cid('S');
+        if (!sesi) payload.newId = id;
+        const er = await saveFast('sesiSave', payload, b => {
+          const row = Object.assign({}, sesi || { ujian: ujianAktif() }, { id, guru: AppState.me.id, mapel: c.mapel, kelas: c.kelas, n: payload.n, kunci: payload.kunci, mode: payload.mode, bobot: payload.bobot, diubah: new Date().toISOString() });
+          upsertBy(b.sesi, x => x.id === id, row);
+          if (payload.recalc) recalcLocal(row, b);
+        });
+        if (er) return toast(er, 'bad', 4000);
+        Store.del(dkey);
+        toast(payload.recalc ? 'Kunci jawaban tersimpan & nilai dihitung ulang.' : 'Kunci jawaban tersimpan.');
         nav('#/scan');
       });
     }
@@ -767,7 +808,7 @@ function saveHasil(sesi, nisn, R, withPhoto) {
   const n = sesi.n;
   const sc = OMR.score(R.jawaban.slice(0, n), sesi.kunci, sesi.mode, sesi.bobot ? sesi.bobot.split(',') : null);
   R.score = sc;
-  const data = { idScan: R.idScan, idSesi: sesi.id, nisn, jawaban: R.jawaban, status: R.status === 'Dikoreksi manual' ? 'Dikoreksi manual' : '', waktu: new Date().toISOString(), local: { nilai: sc.nilai, status: R.status } };
+  const data = { idScan: R.idScan, idSesi: sesi.id, mapel: sesi.mapel, kelas: sesi.kelas, ujian: sesi.ujian, nisn, jawaban: R.jawaban, status: R.status === 'Dikoreksi manual' ? 'Dikoreksi manual' : '', waktu: new Date().toISOString(), local: { nilai: sc.nilai, status: R.status } };
   AppState.pending = (AppState.pending || []).filter(x => !(x.action === 'hasilSave' && x.data.idSesi === sesi.id && x.data.nisn === nisn));
   AppState.pending.push({ action: 'hasilSave', data });
   buildMaps();
@@ -1039,25 +1080,42 @@ async function openHasilDetail(id, opt = {}) {
     $('.amap', fp).onclick = e => {
       const b = e.target.closest('[data-q]'); if (!b) return;
       editAnswer(+b.dataset.q, r.j || '', S.kunci, null, async j => {
-        const t = toast('Menyimpan koreksi…', 'info', 1500);
-        const res = await api('hasilUpdate', { idScan: r.id, jawaban: j });
-        if (!res.success) return toast(res.message, 'bad');
-        Object.assign(r, res.data); patchHasilCache(res.data); draw(); toast('Koreksi tersimpan. Nilai: ' + fmt.num(res.data.nilai));
+        // v1.5: nilai dihitung di HP (rumus sama dengan server) → tampil seketika, dikirim di latar
+        const sc = OMR.score(j, S.kunci, S.mode, S.bobot ? S.bobot.split(',') : null);
+        Object.assign(r, { j, b: sc.benar, s: sc.salah, k: sc.kosong, skor: sc.skor, nilai: sc.nilai, status: sc.ragu ? 'Perlu dicek' : 'Dikoreksi manual', oleh: AppState.me.nama });
+        patchHasilCache(r); draw(); toast('Koreksi tersimpan. Nilai: ' + fmt.num(r.nilai));
+        Outbox.add('hasilUpdate', { idScan: r.id, jawaban: j }, null, { master: true });
       });
     };
     const rs = $('#hd-rescan', fp); if (rs) rs.onclick = () => { unreg(); fp.remove(); openScanner(opt.sesi || S, r.nisn); };
     const del = $('#hd-del', fp); if (del) del.onclick = async () => {
       if (!(await confirmDlg({ title: 'Hapus hasil ini?', text: 'Hasil ' + r.nama + ' (' + mapelNama(r.mapel) + ') akan dihapus permanen beserta foto buktinya.', ok: 'Hapus', danger: true, icon: 'trash-2' }))) return;
       await withBtn(del, async () => {
-        const res = await api('hasilDelete', { ids: [r.id] });
-        if (!res.success) return toast(res.message, 'bad');
         const k = userKey('hasil:' + ujianAktif()), c = Store.get(k, null); if (c) { c.data.rows = c.data.rows.filter(x => x.id !== r.id); Store.set(k, c); }
-        AppState.boot.hasilIdx = AppState.boot.hasilIdx.filter(x => x[0] !== r.id); saveBootLocal(); buildMaps();
+        const er = await saveFast('hasilDelete', { ids: [r.id] }, b => { b.hasilIdx = b.hasilIdx.filter(x => x[0] !== r.id); });
+        if (er) return toast(er, 'bad');
         toast('Hasil dihapus.'); close();
       });
     };
   };
   draw();
+}
+/** Hitung ulang nilai satu kunci di HP dari jawaban tersimpan (cache daftar hasil) — server melakukan hal yang sama. */
+function recalcLocal(sesi, b) {
+  const bw = sesi.bobot ? sesi.bobot.split(',') : null;
+  Object.keys(localStorage).filter(k => k.indexOf(LS_PREFIX + userKey('hasil:')) === 0).forEach(k => {
+    try {
+      const c = JSON.parse(localStorage.getItem(k)); let ch = 0;
+      c.data.rows.forEach(r => {
+        if (r.sesi !== sesi.id || !r.j) return;
+        const sc = OMR.score(r.j, sesi.kunci, sesi.mode, bw);
+        Object.assign(r, { b: sc.benar, s: sc.salah, k: sc.kosong, skor: sc.skor, nilai: sc.nilai, status: r.status === 'Dikoreksi manual' ? r.status : (sc.ragu ? 'Perlu dicek' : 'OK') });
+        const ix = b.hasilIdx.find(x => x[0] === r.id); if (ix) { ix[3] = r.nilai; ix[4] = r.status; }
+        ch++;
+      });
+      if (ch) { c.h = ''; localStorage.setItem(k, JSON.stringify(c)); }
+    } catch (e) { }
+  });
 }
 function patchHasilCache(row) {
   Object.keys(localStorage).filter(k => k.indexOf(LS_PREFIX + userKey('hasil:')) === 0).forEach(k => {

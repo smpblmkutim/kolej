@@ -51,16 +51,16 @@ function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 
 
 /* ---------------- API ---------------- */
 const READ_ACTIONS = /^(boot|batch|hasilList|logList|publicBoot|ping|exportPdf)$/;
-async function apiOnce(action, data, timeout, reqId) {
+async function apiOnce(action, data, timeout, reqId, boot) {
   const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), timeout), t0 = performance.now();
   try {
     const res = await fetch(GAS_URL, {
       method: 'POST', redirect: 'follow', cache: 'no-store', signal: ctrl.signal,
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },          // tanpa CORS preflight
-      body: JSON.stringify({ action, token: AppState.token || '', reqId, data: data || {} })
+      body: JSON.stringify(Object.assign({ action, token: AppState.token || '', reqId, data: data || {} }, boot ? { boot: 1 } : {}))
     });
     const text = await res.text();
-    try { const j = JSON.parse(text); Perf.add(action, Math.round(performance.now() - t0), j.ms, j.cached); return j; }
+    try { const j = JSON.parse(text); Perf.add(action, Math.round(performance.now() - t0), j.ms, j.cached); if (j.v && j.v !== AppState.serverV) { AppState.serverV = j.v; Store.set('serverV', j.v); } return j; }
     catch (e) { return { success: false, network: true, retryable: res.status >= 500 || res.status === 429 || res.status === 200, message: 'Server membalas tidak terduga (HTTP ' + res.status + '). Periksa URL GAS di config.js.' }; }
   } catch (err) {
     return { success: false, network: true, retryable: true, message: err.name === 'AbortError' ? 'Server terlalu lama merespons.' : 'Koneksi terputus. Periksa internet Anda.' };
@@ -85,7 +85,7 @@ async function apiRun(action, data, opt, isRead) {
   let res;
   for (let i = 0; i < tries; i++) {
     if (i) { await sleep(1000 * i); if (navigator.onLine === false) await waitOnline(12000); }
-    res = await apiOnce(action, data, isRead ? (i ? 40000 : 25000) : (opt.timeout || 60000), reqId);
+    res = await apiOnce(action, data, isRead ? (i ? 40000 : 25000) : (opt.timeout || 60000), reqId, opt.boot);
     if (res.success || !res.retryable) break;
   }
   if (!res.success && res.data && res.data.code === 'AUTH' && !opt.noAuthPrompt) onSessionExpired();
@@ -114,9 +114,16 @@ async function swr(key, action, payload, render, opt = {}) {
   return res;
 }
 
-/* ---------------- Antrean offline (IndexedDB) — hasil scan & foto ---------------- */
+/* ---------------- Antrean (IndexedDB) — semua simpanan dikirim di latar ----------------
+   v1.5: simpan terasa instan. Data langsung berubah di HP, lalu antrean mengirimnya ke server.
+   - Beberapa simpanan yang menumpuk dikirim dalam SATU panggilan ('tulis') → jauh lebih cepat.
+   - Simpanan data (master/kunci/koreksi) meminta data terbaru ikut di jawaban → tanpa panggilan 'boot' kedua.
+   - Gagal karena sinyal → dicoba lagi otomatis. Ditolak server → dibatalkan & data HP disegarkan dari server. */
+const NO_BATCH = { fotoUpload: 1 };
+/** Gangguan sementara di server (sibuk/kuota/waktu habis) → dicoba lagi, bukan dibatalkan. */
+const transient = res => /sibuk|too many times|timed out|timeout|Service unavailable|Internal error|kuota|quota/i.test(res.message || '');                    // foto: besar & dikerjakan di luar kunci server
 const Outbox = {
-  db: null, busy: false, listeners: [],
+  db: null, busy: false, again: false, listeners: [], pendingMaster: 0, noBatch: false,
   open() {
     if (this.db) return Promise.resolve(this.db);
     return new Promise((res, rej) => {
@@ -127,28 +134,75 @@ const Outbox = {
     });
   },
   async tx(mode, fn) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction('outbox', mode), s = t.objectStore('outbox'); const out = fn(s); t.oncomplete = () => res(out && out.result !== undefined ? out.result : out); t.onerror = () => rej(t.error); }); },
-  async add(action, data, id) { await this.tx('readwrite', s => s.put({ id: id || uuid(), action, data, t: Date.now(), user: AppState.me && AppState.me.id, err: '' })); this.emit(); this.flush(); },
+  /** meta.master = simpanan data (bukan hasil scan): bila ditolak server → dibatalkan & data disegarkan. */
+  async add(action, data, id, meta) {
+    const it = Object.assign({ id: id || uuid(), action, data, t: Date.now(), user: AppState.me && AppState.me.id, err: '' }, meta || {});
+    if (it.master) this.pendingMaster++;
+    await this.tx('readwrite', s => s.put(it)); this.emit(); this.flush();
+  },
   async all() { const db = await this.open(); return new Promise(res => { const r = db.transaction('outbox').objectStore('outbox').getAll(); r.onsuccess = () => res((r.result || []).sort((a, b) => a.t - b.t)); r.onerror = () => res([]); }); },
   async del(id) { await this.tx('readwrite', s => s.delete(id)); this.emit(); },
   async put(item) { await this.tx('readwrite', s => s.put(item)); },
   on(fn) { this.listeners.push(fn); },
-  async emit() { const items = await this.all(); this.listeners.forEach(f => f(items)); },
+  async emit() { const items = await this.all(); this.pendingMaster = items.filter(x => x.master && !x.err).length; this.listeners.forEach(f => f(items)); },
   async flush() {
-    if (this.busy || !AppState.token || navigator.onLine === false) return;
+    if (this.busy) { this.again = true; return; }
+    if (!AppState.token || navigator.onLine === false) return;
     this.busy = true;
+    let lastBoot = null, rollback = false, needBoot = false;
     try {
-      let items = (await this.all()).filter(x => !x.err && (!x.user || !AppState.me || x.user === AppState.me.id));
-      for (const it of items) {
-        const res = await api(it.action, it.data, { reqId: it.id, tries: 2, timeout: 90000 });
-        if (res.success) { await this.del(it.id); if (it.onDone) it.onDone(res); Outbox.done(it, res); continue; }
-        if (res.network) break;                              // coba lagi nanti
-        if (res.data && res.data.code === 'AUTH') break;      // tunggu login ulang
-        it.err = res.message || 'Gagal'; await this.put(it); this.emit();
-        toast('Gagal mengirim: ' + it.err, 'bad');
+      for (let round = 0; round < 50; round++) {
+        this.again = false;
+        const items = (await this.all()).filter(x => !x.err && (!x.user || !AppState.me || x.user === AppState.me.id));
+        if (!items.length) break;
+        // kelompokkan: simpanan berurutan (bukan foto) dikirim bersama, maks. 20 per panggilan
+        const group = [items[0]];
+        if (!NO_BATCH[items[0].action] && !this.noBatch) for (let i = 1; i < items.length && group.length < 20 && !NO_BATCH[items[i].action]; i++) group.push(items[i]);
+        const wantBoot = group.some(x => x.master);
+        let results;
+        if (group.length === 1) {
+          const it = group[0], res = await api(it.action, it.data, { reqId: it.id, tries: 2, timeout: 90000, boot: it.master });
+          if (res.boot) lastBoot = res.boot;
+          results = [res];
+        } else {
+          const res = await api('tulis', { items: group.map(it => ({ action: it.action, data: it.data, reqId: it.id })) }, { tries: 2, timeout: 120000, boot: wantBoot });
+          if (!res.success && /Aksi tidak dikenal/.test(res.message || '')) { this.noBatch = true; continue; }   // server lama → kirim satu per satu
+          if (!res.success) results = group.map(() => Object.assign({}, res, { network: res.data && res.data.code === 'AUTH' ? false : true }));   // gagal seluruhnya → coba lagi nanti
+          else { results = res.data.results; if (res.boot) lastBoot = res.boot; }
+        }
+        let stop = false;
+        for (let i = 0; i < group.length; i++) {
+          const it = group[i], res = results[i] || { success: false, network: true };
+          if (res.success) { await this.del(it.id); if (it.master) needBoot = true; Outbox.done(it, res); continue; }
+          if (res.network || transient(res) || (res.data && res.data.code === 'AUTH')) { stop = true; break; }   // coba lagi nanti / tunggu login ulang
+          if (it.master) {                                   // ditolak server → batalkan perubahan di HP
+            await this.del(it.id); rollback = true;
+            toast('Gagal menyimpan: ' + (res.message || 'ditolak server') + ' Perubahan dibatalkan.', 'bad', 6000);
+            document.dispatchEvent(new CustomEvent('outbox:fail', { detail: { item: it, res } }));
+          } else {
+            it.err = res.message || 'Gagal'; await this.put(it); this.emit();
+            toast('Gagal mengirim: ' + it.err, 'bad');
+          }
+        }
+        if (stop) break;
       }
-    } finally { this.busy = false; this.emit(); }
+    } finally {
+      this.busy = false; await this.emit();
+      if (!this.pendingMaster && (needBoot || rollback)) {
+        // data terbaru: dari jawaban simpanan terakhir, atau ambil sekali bila server lama/ada pembatalan
+        if (lastBoot && !rollback) document.dispatchEvent(new CustomEvent('kolej:boot', { detail: lastBoot }));
+        else api('boot').then(r => { if (r.success && !this.pendingMaster) document.dispatchEvent(new CustomEvent('kolej:boot', { detail: r.data })); });
+      }
+      if (this.again) setTimeout(() => this.flush(), 0);
+    }
   },
-  done(it, res) { document.dispatchEvent(new CustomEvent('outbox:done', { detail: { item: it, res } })); }
+  done(it, res) { document.dispatchEvent(new CustomEvent('outbox:done', { detail: { item: it, res } })); },
+  /** Tunggu simpanan data yang masih antre terkirim (maks. ms) — dipakai sebelum hapus/impor agar urutan terjaga. */
+  async drain(ms = 25000) {
+    const t0 = Date.now();
+    while (this.pendingMaster && Date.now() - t0 < ms && navigator.onLine !== false) { this.flush(); await sleep(250); }
+    return !this.pendingMaster;
+  }
 };
 addEventListener('online', () => { AppState.online = true; Outbox.flush(); renderNet(); });
 addEventListener('offline', () => { AppState.online = false; renderNet(); });
